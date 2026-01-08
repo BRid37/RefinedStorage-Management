@@ -75,7 +75,89 @@ function RSBridge.new()
     }
     self.callCount = 0   -- Track API calls for debugging
     self.craftableIndex = {}  -- Quick lookup: name -> true for craftable items
+    
+    -- Dynamic field detection - remembers which field names work
+    self.fieldMap = {
+        -- Item fields: detected field name -> standard name
+        itemAmount = nil,      -- amount, count, size
+        itemName = nil,        -- name, id
+        itemDisplayName = nil, -- displayName, label
+        -- Fluid fields
+        fluidAmount = nil,     -- amount, count, stored
+        fluidName = nil,       -- name, id
+        -- Task fields
+        taskName = nil,        -- name, item, output
+        taskAmount = nil,      -- amount, count, quantity
+    }
+    self.fieldMapLogged = false
+    
     return self
+end
+
+-- Safely get a field from a table, trying multiple possible names
+function RSBridge:getField(tbl, fieldType, ...)
+    if not tbl then return nil end
+    
+    local candidates = {...}
+    
+    -- If we've already detected which field works, try it first
+    if self.fieldMap[fieldType] then
+        local val = tbl[self.fieldMap[fieldType]]
+        if val ~= nil then return val end
+    end
+    
+    -- Try each candidate
+    for _, field in ipairs(candidates) do
+        local val = tbl[field]
+        if val ~= nil then
+            -- Remember which field worked
+            self.fieldMap[fieldType] = field
+            return val
+        end
+    end
+    
+    return nil
+end
+
+-- Get item amount with auto-detection
+function RSBridge:getItemAmountField(item)
+    return self:getField(item, "itemAmount", "amount", "count", "size") or 0
+end
+
+-- Get item name with auto-detection
+function RSBridge:getItemNameField(item)
+    return self:getField(item, "itemName", "name", "id") or "unknown"
+end
+
+-- Get item display name with auto-detection
+function RSBridge:getItemDisplayNameField(item)
+    return self:getField(item, "itemDisplayName", "displayName", "label") or self:getItemNameField(item)
+end
+
+-- Get fluid amount with auto-detection
+function RSBridge:getFluidAmountField(fluid)
+    return self:getField(fluid, "fluidAmount", "amount", "count", "stored") or 0
+end
+
+-- Get task name with auto-detection
+function RSBridge:getTaskNameField(task)
+    -- Handle nested structures
+    if task.stack and task.stack.name then return task.stack.name end
+    if task.output and type(task.output) == "table" and task.output.name then return task.output.name end
+    return self:getField(task, "taskName", "name", "item", "output") or "Unknown"
+end
+
+-- Get task display name
+function RSBridge:getTaskDisplayNameField(task)
+    if task.stack and task.stack.displayName then return task.stack.displayName end
+    if task.output and type(task.output) == "table" and task.output.displayName then return task.output.displayName end
+    return self:getField(task, "taskDisplayName", "displayName", "label") or self:getTaskNameField(task)
+end
+
+-- Get task amount with auto-detection  
+function RSBridge:getTaskAmountField(task)
+    if task.stack and task.stack.count then return task.stack.count end
+    return self:getField(task, "taskAmount", "amount", "count", "quantity") or 1
 end
 
 function RSBridge:connect()
@@ -300,14 +382,27 @@ function RSBridge:listFluids(forceRefresh)
     end
     
     if result and type(result) == "table" then
-        self.cache.fluids = result
-        self.cache.fluidsTime = now
         -- Log first fluid structure for debugging (only once)
         if #result > 0 and not self.fluidLogged then
             log("First fluid keys: " .. textutils.serialise(result[1]))
             self.fluidLogged = true
         end
-        return result
+        
+        -- Normalize fluid data using dynamic field detection
+        local normalized = {}
+        for _, fluid in ipairs(result) do
+            local f = {
+                name = self:getField(fluid, "fluidName", "name", "id") or "unknown",
+                displayName = self:getField(fluid, "fluidDisplayName", "displayName", "label") or fluid.name or "Unknown",
+                amount = self:getFluidAmountField(fluid),
+                raw = fluid
+            }
+            table.insert(normalized, f)
+        end
+        
+        self.cache.fluids = normalized
+        self.cache.fluidsTime = now
+        return normalized
     end
     
     return self.cache.fluids or {}
@@ -502,34 +597,21 @@ function RSBridge:getCraftingTasks()
             self.taskLogged = true
         end
         
-        -- Normalize task data - AP may use different field names
+        -- Normalize task data using dynamic field detection
         local normalized = {}
         for _, task in ipairs(result) do
             local t = {
-                -- Try various field names for the item name
-                name = task.name or task.item or task.output or 
-                       (task.stack and task.stack.name) or
-                       (task.output and task.output.name) or "Unknown",
-                -- Try various field names for display name
-                displayName = task.displayName or task.label or 
-                              (task.stack and task.stack.displayName) or
-                              (task.output and task.output.displayName),
-                -- Try various field names for amount
-                amount = task.amount or task.count or task.quantity or
-                         (task.stack and task.stack.count) or 1,
-                -- Progress if available
+                name = self:getTaskNameField(task),
+                displayName = self:getTaskDisplayNameField(task),
+                amount = self:getTaskAmountField(task),
                 progress = task.progress or task.percentage or nil,
-                -- Original task data for reference
                 raw = task
             }
-            -- Fall back displayName to name if not found
-            t.displayName = t.displayName or t.name
             table.insert(normalized, t)
         end
         
         self.cache.tasks = normalized
         self.cache.tasksTime = now
-        log("getCraftingTasks returned " .. #normalized .. " tasks")
         return normalized
     end
     

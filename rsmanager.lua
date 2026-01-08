@@ -441,17 +441,18 @@ local function showStockKeeper()
             end
             
             -- Status indicator - check pattern status first
-            local current = bridge:getItemAmount(item.name)
+            local current = bridge:getItemAmount(item.name) or 0
+            local target = item.amount or 1
             if item.patternStatus == "no_pattern" then
                 term.setTextColor(colors.magenta)
                 term.write("X")  -- Pattern missing
             elseif item.lastCraftStatus == "no_materials" then
                 term.setTextColor(colors.yellow)
                 term.write("M")  -- Missing materials
-            elseif current >= item.amount then
+            elseif current >= target then
                 term.setTextColor(colors.green)
                 term.write("+")
-            elseif current >= item.amount * 0.5 then
+            elseif current >= target * 0.5 then
                 term.setTextColor(colors.orange)
                 term.write("~")
             else
@@ -460,10 +461,10 @@ local function showStockKeeper()
             end
             
             term.setTextColor(colors.white)
-            term.write(" " .. Utils.truncate(item.displayName or item.name, 22))
+            term.write(" " .. Utils.truncate(item.displayName or item.name or "Unknown", 22))
             term.setCursorPos(28, y)
             term.setTextColor(colors.cyan)
-            term.write(Utils.formatNumber(current) .. "/" .. Utils.formatNumber(item.amount))
+            term.write(Utils.formatNumber(current) .. "/" .. Utils.formatNumber(target))
             
             -- Show status suffix
             if item.patternStatus == "no_pattern" then
@@ -520,8 +521,9 @@ local function showStockKeeper()
         elseif key == keys.c and #items > 0 then
             -- Craft selected item now
             local item = items[selected]
-            local current = bridge:getItemAmount(item.name)
-            local needed = item.amount - current
+            local current = bridge:getItemAmount(item.name) or 0
+            local target = item.amount or 1
+            local needed = target - current
             if needed > 0 then
                 local success, reason = bridge:craftItem(item.name, needed)
                 if not success then
@@ -657,7 +659,8 @@ showAddStockItem = function()
                     selectedResult = math.min(#results, selectedResult + 1)
                 elseif key == keys.enter and #results > 0 then
                     phase = "amount"
-                    amount = results[selectedResult].amount > 0 and results[selectedResult].amount or 64
+                    local itemAmt = results[selectedResult].amount or results[selectedResult].count or 0
+                    amount = (itemAmt > 0) and itemAmt or 64
                 end
             else -- amount phase
                 if key == keys.up or key == keys.equals then
@@ -693,7 +696,8 @@ end
 
 -- Edit stock item dialog
 showEditStockItem = function(item)
-    local amount = item.amount
+    if not item then return end
+    local amount = item.amount or 64
     
     while true do
         GUI.clear()
@@ -703,13 +707,13 @@ showEditStockItem = function(item)
         term.setTextColor(colors.yellow)
         term.write("Item: ")
         term.setTextColor(colors.cyan)
-        term.write(item.displayName or item.name)
+        term.write(item.displayName or item.name or "Unknown")
         
         term.setCursorPos(2, 6)
         term.setTextColor(colors.yellow)
         term.write("Current target: ")
         term.setTextColor(colors.white)
-        term.write(tostring(item.amount))
+        term.write(tostring(item.amount or 0))
         
         term.setCursorPos(2, 8)
         term.setTextColor(colors.yellow)
@@ -1506,11 +1510,10 @@ local function showSystemStats()
             term.setCursorPos(4, y)
             term.setTextColor(colors.cyan)
             local fluid = fluids[i]
-            term.write(Utils.truncate(fluid.displayName or fluid.name, 20))
+            -- Data is already normalized by rsbridge
+            term.write(Utils.truncate(fluid.displayName or fluid.name or "Unknown", 20))
             term.setTextColor(colors.white)
-            -- Try different field names for fluid amount
-            local fluidAmt = fluid.amount or fluid.count or fluid.stored or 0
-            term.write(": " .. Utils.formatNumber(fluidAmt) .. " mB")
+            term.write(": " .. Utils.formatNumber(fluid.amount or 0) .. " mB")
             y = y + 1
         end
         
