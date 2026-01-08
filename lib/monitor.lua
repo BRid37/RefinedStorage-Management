@@ -915,21 +915,29 @@ function Monitor:drawLargeLayoutDynamic()
                         local target = item.amount or 1
                         local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 15)
                         
-                        -- Status indicator
+                        -- Clear stale craft status if item is now stocked
+                        if current >= target and (item.lastCraftStatus == "no_materials" or item.lastCraftStatus == "crafting") then
+                            item.lastCraftStatus = nil
+                        end
+                        
+                        -- Status indicator - prioritize actual stock level
                         local statusChar = "+"
                         local statusColor = colors.green
                         if item.patternStatus == "no_pattern" then
                             statusChar = "X"
                             statusColor = colors.magenta
-                        elseif item.lastCraftStatus == "no_materials" then
+                        elseif current < target and item.lastCraftStatus == "no_materials" then
                             statusChar = "M"
                             statusColor = colors.yellow
-                        elseif current < target then
-                            statusChar = "!"
-                            statusColor = colors.red
-                        elseif current < target * 1.5 then
+                        elseif current >= target then
+                            statusChar = "+"
+                            statusColor = colors.green
+                        elseif current >= target * 0.5 then
                             statusChar = "~"
                             statusColor = colors.orange
+                        else
+                            statusChar = "!"
+                            statusColor = colors.red
                         end
                         
                         local amtStr = Utils.formatNumber(current) .. "/" .. Utils.formatNumber(target)
@@ -948,20 +956,29 @@ function Monitor:drawLargeLayoutDynamic()
                     local target = item.amount or 1
                     local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 15)
                     
+                    -- Clear stale craft status if item is now stocked
+                    if current >= target and (item.lastCraftStatus == "no_materials" or item.lastCraftStatus == "crafting") then
+                        item.lastCraftStatus = nil
+                    end
+                    
+                    -- Status indicator - prioritize actual stock level
                     local statusChar = "+"
                     local statusColor = colors.green
                     if item.patternStatus == "no_pattern" then
                         statusChar = "X"
                         statusColor = colors.magenta
-                    elseif item.lastCraftStatus == "no_materials" then
+                    elseif current < target and item.lastCraftStatus == "no_materials" then
                         statusChar = "M"
                         statusColor = colors.yellow
-                    elseif current < target then
-                        statusChar = "!"
-                        statusColor = colors.red
-                    elseif current < target * 1.5 then
+                    elseif current >= target then
+                        statusChar = "+"
+                        statusColor = colors.green
+                    elseif current >= target * 0.5 then
                         statusChar = "~"
                         statusColor = colors.orange
+                    else
+                        statusChar = "!"
+                        statusColor = colors.red
                     end
                     
                     local amtStr = Utils.formatNumber(current) .. "/" .. Utils.formatNumber(target)

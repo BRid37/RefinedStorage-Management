@@ -3,7 +3,7 @@
 local Config = {}
 
 local defaults = {
-    refreshRate = 5,        -- Dashboard refresh rate in seconds
+    refreshRate = 1,        -- Monitor refresh rate in seconds (1s = real-time feel, data is cached)
     craftDelay = 10,        -- Delay between stock keeper checks
     lowStockPercent = 50,   -- Percentage threshold for low stock warning
     useMonitor = true,      -- Use external monitor if available
