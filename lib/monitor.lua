@@ -515,10 +515,10 @@ function Monitor:getEnergyColor(percent)
 end
 
 function Monitor:getItemData()
-    local items = self.bridge:listItems()
+    local items = self.bridge:listItems() or {}
     local total = 0
     for _, item in ipairs(items) do
-        total = total + item.amount
+        total = total + (item.amount or item.count or 0)
     end
     return items, total
 end
@@ -553,7 +553,7 @@ function Monitor:drawItemList(items, startY, maxItems)
         
         local name = Utils.truncate(item.displayName or item.name, self.width - 12)
         self:write(2, y, name, colors.cyan)
-        self:write(self.width - 8, y, Utils.formatNumber(item.amount), colors.white)
+        self:write(self.width - 8, y, Utils.formatNumber(item.amount or item.count or 0), colors.white)
         
         y = y + 1
         count = count + 1
