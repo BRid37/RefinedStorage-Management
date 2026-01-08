@@ -845,10 +845,14 @@ local function loadMonitoredItems()
             local content = file.readAll()
             file.close()
             local data = textutils.unserialise(content)
-            if data then
+            if data and type(data) == "table" then
                 monitoredItems = data
             end
         end
+    end
+    -- Ensure monitoredItems is always a table, never nil
+    if not monitoredItems or type(monitoredItems) ~= "table" then
+        monitoredItems = {}
     end
 end
 
