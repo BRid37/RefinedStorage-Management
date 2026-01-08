@@ -21,7 +21,7 @@ function RSBridge.new()
 end
 
 function RSBridge:connect()
-    self.bridge = peripheral.find("rsBridge")
+    self.bridge = peripheral.find("rs_bridge")
     if self.bridge then
         self.connected = true
         return true
