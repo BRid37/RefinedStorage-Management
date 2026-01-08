@@ -94,7 +94,7 @@ local function install()
     
     -- Check for RS Bridge
     printC("Checking for RS Bridge...", colors.yellow)
-    local bridge = peripheral.find("rsBridge")
+    local bridge = peripheral.find("rs_bridge")
     if not bridge then
         printC("[!] No RS Bridge found!", colors.orange)
         printC("    Connect an RS Bridge for full functionality.", colors.gray)
