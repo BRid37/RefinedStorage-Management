@@ -1,18 +1,19 @@
 -- Auto-updater module for RS Manager
--- Checks GitHub for updates and downloads new versions
+-- Uses GitHub commit hash to detect updates - any new commit triggers update
 
 local Updater = {}
 Updater.__index = Updater
 
--- Version info
-Updater.VERSION = "1.1.1"
+-- Version info (for display only)
+Updater.VERSION = "1.2.1"
 Updater.GITHUB_USER = "BRid37"
 Updater.GITHUB_REPO = "RefinedStorage-Management"
 Updater.GITHUB_BRANCH = "main"
 
 local GITHUB_RAW = "https://raw.githubusercontent.com/"
-local VERSION_FILE = "version.txt"
+local GITHUB_API = "https://api.github.com/repos/"
 local INSTALL_DIR = "/rsmanager"
+local COMMIT_FILE = "/rsmanager/.commit"
 
 local files = {
     "rsmanager.lua",
@@ -23,15 +24,37 @@ local files = {
     "lib/gui.lua",
     "lib/utils.lua",
     "lib/updater.lua",
+    "version.txt",
 }
 
 function Updater.new()
     local self = setmetatable({}, Updater)
-    self.currentVersion = Updater.VERSION
-    self.remoteVersion = nil
+    self.localCommit = self:getLocalCommit()
+    self.remoteCommit = nil
     self.updateAvailable = false
-    self.lastCheck = 0
     return self
+end
+
+function Updater:getLocalCommit()
+    if fs.exists(COMMIT_FILE) then
+        local file = fs.open(COMMIT_FILE, "r")
+        if file then
+            local hash = file.readAll()
+            file.close()
+            return hash:gsub("%s+", "")
+        end
+    end
+    return nil
+end
+
+function Updater:saveLocalCommit(hash)
+    local file = fs.open(COMMIT_FILE, "w")
+    if file then
+        file.write(hash)
+        file.close()
+        return true
+    end
+    return false
 end
 
 local function getBaseUrl()
@@ -62,36 +85,21 @@ local function writeFile(path, content)
     return false
 end
 
-local function parseVersion(versionStr)
-    if not versionStr then return {0, 0, 0} end
-    versionStr = versionStr:gsub("%s+", ""):gsub("^v", "")
-    local parts = {}
-    for num in versionStr:gmatch("(%d+)") do
-        table.insert(parts, tonumber(num) or 0)
-    end
-    while #parts < 3 do
-        table.insert(parts, 0)
-    end
-    return parts
-end
-
-local function compareVersions(v1, v2)
-    local p1 = parseVersion(v1)
-    local p2 = parseVersion(v2)
+function Updater:getRemoteCommit()
+    -- Use GitHub API to get latest commit hash
+    local url = GITHUB_API .. Updater.GITHUB_USER .. "/" .. Updater.GITHUB_REPO .. "/commits/" .. Updater.GITHUB_BRANCH
+    local response = http.get(url, {["User-Agent"] = "CC-Tweaked"})
     
-    for i = 1, 3 do
-        if p1[i] > p2[i] then return 1 end
-        if p1[i] < p2[i] then return -1 end
-    end
-    return 0
-end
-
-function Updater:getRemoteVersion()
-    local url = getBaseUrl() .. VERSION_FILE
-    local content = httpGet(url)
-    if content then
-        self.remoteVersion = content:gsub("%s+", "")
-        return self.remoteVersion
+    if response then
+        local content = response.readAll()
+        response.close()
+        
+        -- Parse JSON to get sha (simple pattern match)
+        local sha = content:match('"sha"%s*:%s*"([a-f0-9]+)"')
+        if sha then
+            self.remoteCommit = sha:sub(1, 7)  -- Use short hash
+            return self.remoteCommit
+        end
     end
     return nil
 end
@@ -101,14 +109,13 @@ function Updater:checkForUpdates()
         return false, "HTTP API disabled"
     end
     
-    local remote = self:getRemoteVersion()
+    local remote = self:getRemoteCommit()
     if not remote then
-        return false, "Could not check remote version"
+        return false, "Could not check remote commit"
     end
     
-    self.lastCheck = os.epoch("utc")
-    
-    if compareVersions(remote, self.currentVersion) > 0 then
+    -- If no local commit stored, or commits differ, update available
+    if not self.localCommit or self.localCommit ~= remote then
         self.updateAvailable = true
         return true, remote
     end
@@ -151,9 +158,9 @@ function Updater:downloadUpdate(progressCallback)
         progressCallback("complete", downloaded, total)
     end
     
-    -- Update local version file
-    if success then
-        writeFile(INSTALL_DIR .. "/" .. VERSION_FILE, self.remoteVersion or Updater.VERSION)
+    -- Save the commit hash we just downloaded
+    if success and self.remoteCommit then
+        self:saveLocalCommit(self.remoteCommit)
     end
     
     return success, downloaded .. "/" .. total .. " files updated"
@@ -170,7 +177,7 @@ function Updater:performUpdate(printFunc)
         return false
     end
     
-    printFunc("Update available: v" .. self.currentVersion .. " -> v" .. self.remoteVersion)
+    printFunc("Update available! (commit: " .. (self.remoteCommit or "unknown") .. ")")
     printFunc("Downloading update...")
     
     local success, result = self:downloadUpdate(function(file, current, total)
@@ -207,11 +214,11 @@ function Updater:autoUpdate(config, printFunc)
     
     local hasUpdate, info = self:checkForUpdates()
     if not hasUpdate then
-        printFunc("RS Manager is up to date (v" .. self.currentVersion .. ")")
+        printFunc("RS Manager is up to date (v" .. Updater.VERSION .. ")")
         return false, info
     end
     
-    printFunc("Update found: v" .. self.remoteVersion)
+    printFunc("Update found! (commit: " .. (self.remoteCommit or "new") .. ")")
     printFunc("Downloading...")
     
     local success, result = self:downloadUpdate(function(file, current, total)
