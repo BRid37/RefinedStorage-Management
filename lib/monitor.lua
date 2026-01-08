@@ -988,12 +988,9 @@ function Monitor:drawLargeLayoutDynamic()
                 end
             end
         end
-    else
-        self:writePadded(col2X, y, "=== Stock Keeper ===", colWidth, colors.gray)
-        y = y + 1
-        self:writePadded(col2X, y, "No items configured", colWidth, colors.gray)
     end
     
+    -- Clear column 2 (whether Stock Keeper shown or not)
     while y < self.height do
         self:writePadded(col2X, y, "", colWidth, colors.black)
         y = y + 1
@@ -1025,12 +1022,9 @@ function Monitor:drawLargeLayoutDynamic()
                 y = y + 1
             end
         end
-    else
-        self:writePadded(col3X, y, "=== Item Monitor ===", colWidth, colors.gray)
-        y = y + 1
-        self:writePadded(col3X, y, "No items configured", colWidth, colors.gray)
     end
     
+    -- Clear column 3 (whether Item Monitor shown or not)
     while y < self.height do
         self:writePadded(col3X, y, "", colWidth, colors.black)
         y = y + 1
