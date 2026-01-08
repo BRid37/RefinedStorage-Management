@@ -178,7 +178,7 @@ function GUI.confirm(message)
             return selected == 1
         elseif key == keys.y then
             return true
-        elseif key == keys.n or key == keys.escape then
+        elseif key == keys.n or key == keys.q then
             return false
         end
     end
@@ -215,7 +215,7 @@ function GUI.input(prompt, default)
                 term.setCursorBlink(false)
                 term.setBackgroundColor(colors.black)
                 return input
-            elseif key == keys.escape then
+            elseif key == keys.q then
                 term.setCursorBlink(false)
                 term.setBackgroundColor(colors.black)
                 return nil
@@ -281,7 +281,7 @@ function GUI.selectList(title, items, displayFunc)
             end
         elseif key == keys.enter then
             return selected, items[selected]
-        elseif key == keys.escape then
+        elseif key == keys.q then
             return nil
         end
     end
