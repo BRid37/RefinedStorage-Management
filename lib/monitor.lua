@@ -222,7 +222,9 @@ function Monitor:update()
     if not self.monitor then return end
     
     -- Refresh size in case monitor changed
-    self.width, self.height = self.monitor.getSize()
+    local newW, newH = self.monitor.getSize()
+    local sizeChanged = (newW ~= self.width or newH ~= self.height)
+    self.width, self.height = newW, newH
     self:determineLayout()
     
     if self.tooSmall then
@@ -230,8 +232,19 @@ function Monitor:update()
         return
     end
     
-    self:clear()
-    self:drawHeader()
+    -- Only do full clear on first draw or size change
+    if not self.initialized or sizeChanged then
+        self:clear()
+        self:drawHeader()
+        self.initialized = true
+    end
+    
+    -- Clear content area only (not header) - overwrite with spaces
+    for y = 3, self.height - 1 do
+        self.monitor.setCursorPos(1, y)
+        self.monitor.setBackgroundColor(colors.black)
+        self.monitor.write(string.rep(" ", self.width))
+    end
     
     if self.layout == "large" then
         self:drawLargeLayout()
@@ -417,10 +430,12 @@ function Monitor:drawLargeLayout()
     local maxFluids = math.min(4, #fluids)
     for i = 1, maxFluids do
         local fluid = fluids[i]
-        local name = Utils.truncate(fluid.displayName or fluid.name, colWidth - 12)
-        local fluidAmt = fluid.amount or fluid.count or fluid.stored or 0
-        self:write(4, y, name .. " " .. Utils.formatNumber(fluidAmt) .. "mB", colors.gray)
-        y = y + 1
+        if fluid then
+            -- Data is already normalized by rsbridge
+            local name = Utils.truncate(fluid.displayName or fluid.name or "Unknown", colWidth - 12)
+            self:write(4, y, name .. " " .. Utils.formatNumber(fluid.amount or 0) .. "mB", colors.gray)
+            y = y + 1
+        end
     end
     
     -- === COLUMN 2: Stock Keeper ===
