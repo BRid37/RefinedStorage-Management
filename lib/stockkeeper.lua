@@ -4,6 +4,13 @@
 local StockKeeper = {}
 StockKeeper.__index = StockKeeper
 
+-- Pattern status constants
+StockKeeper.STATUS_OK = "ok"
+StockKeeper.STATUS_NO_PATTERN = "no_pattern"
+StockKeeper.STATUS_NO_MATERIALS = "no_materials"
+StockKeeper.STATUS_CRAFTING = "crafting"
+StockKeeper.STATUS_UNKNOWN = "unknown"
+
 function StockKeeper.new(bridge, configPath)
     local self = setmetatable({}, StockKeeper)
     self.bridge = bridge
@@ -13,6 +20,8 @@ function StockKeeper.new(bridge, configPath)
     self.craftingQueue = {}
     self.lastCheck = 0
     self.checkInterval = 5
+    self.lastPatternCheck = 0
+    self.patternCheckInterval = 60  -- Check patterns every 60 seconds
     
     self:load()
     return self
@@ -77,17 +86,94 @@ function StockKeeper:getItems()
 end
 
 function StockKeeper:getActiveCount()
-    return #self.items
+    local count = 0
+    for _, item in ipairs(self.items) do
+        if item.enabled ~= false and item.patternStatus ~= StockKeeper.STATUS_NO_PATTERN then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+-- Validate all items have patterns, mark those missing
+function StockKeeper:validatePatterns(forceRefresh)
+    local now = os.epoch("utc") / 1000
+    
+    -- Skip if checked recently (unless forced)
+    if not forceRefresh and (now - self.lastPatternCheck) < self.patternCheckInterval then
+        return
+    end
+    
+    self.lastPatternCheck = now
+    local changed = false
+    
+    for i, item in ipairs(self.items) do
+        if item and item.name then
+            local isCraftable = self.bridge:isCraftable(item.name, forceRefresh)
+            local oldStatus = item.patternStatus
+            
+            if isCraftable then
+                self.items[i].patternStatus = StockKeeper.STATUS_OK
+            else
+                self.items[i].patternStatus = StockKeeper.STATUS_NO_PATTERN
+            end
+            
+            if oldStatus ~= self.items[i].patternStatus then
+                changed = true
+            end
+        end
+    end
+    
+    if changed then
+        self:save()
+    end
+    
+    return changed
+end
+
+-- Get items with missing patterns
+function StockKeeper:getMissingPatterns()
+    local missing = {}
+    for _, item in ipairs(self.items) do
+        if item.patternStatus == StockKeeper.STATUS_NO_PATTERN then
+            table.insert(missing, item)
+        end
+    end
+    return missing
+end
+
+-- Check single item's pattern status
+function StockKeeper:checkItemPattern(name, forceRefresh)
+    for i, item in ipairs(self.items) do
+        if item.name == name then
+            local isCraftable = self.bridge:isCraftable(name, forceRefresh)
+            if isCraftable then
+                self.items[i].patternStatus = StockKeeper.STATUS_OK
+                self:save()
+                return true, StockKeeper.STATUS_OK
+            else
+                self.items[i].patternStatus = StockKeeper.STATUS_NO_PATTERN
+                self:save()
+                return false, StockKeeper.STATUS_NO_PATTERN
+            end
+        end
+    end
+    return false, "not_found"
 end
 
 function StockKeeper:addItem(name, amount, displayName)
+    -- First verify the item is craftable
+    local isCraftable = self.bridge:isCraftable(name, true)  -- Force refresh
+    local patternStatus = isCraftable and StockKeeper.STATUS_OK or StockKeeper.STATUS_NO_PATTERN
+    
     -- Check if item already exists
     for i, item in ipairs(self.items) do
         if item.name == name then
             self.items[i].amount = amount
             self.items[i].displayName = displayName or item.displayName
+            self.items[i].patternStatus = patternStatus
             self:save()
-            return true
+            return true, patternStatus
         end
     end
     
@@ -97,11 +183,14 @@ function StockKeeper:addItem(name, amount, displayName)
         amount = amount,
         displayName = displayName or name,
         priority = 1,
-        enabled = true
+        enabled = true,
+        patternStatus = patternStatus,
+        lastCraftStatus = nil,  -- Track last craft attempt result
+        lastCraftTime = 0
     })
     
     self:save()
-    return true
+    return true, patternStatus
 end
 
 function StockKeeper:removeItem(name)
@@ -150,14 +239,25 @@ function StockKeeper:getLowStock()
                     current = current,
                     target = target,
                     needed = math.max(0, target - current),
-                    priority = item.priority or 1
+                    priority = item.priority or 1,
+                    patternStatus = item.patternStatus or StockKeeper.STATUS_OK,
+                    lastCraftStatus = item.lastCraftStatus,
+                    lastCraftTime = item.lastCraftTime
                 })
             end
         end
     end
     
     -- Sort by priority (higher first), then by percentage
+    -- Items with missing patterns go to the end
     table.sort(lowStock, function(a, b)
+        -- Missing patterns last
+        local aNoPattern = a.patternStatus == StockKeeper.STATUS_NO_PATTERN
+        local bNoPattern = b.patternStatus == StockKeeper.STATUS_NO_PATTERN
+        if aNoPattern ~= bNoPattern then
+            return bNoPattern  -- non-missing first
+        end
+        
         if (a.priority or 1) ~= (b.priority or 1) then
             return (a.priority or 1) > (b.priority or 1)
         end
@@ -172,24 +272,64 @@ end
 function StockKeeper:check()
     if not self.enabled then return end
     
+    -- Periodically validate patterns
+    self:validatePatterns()
+    
     local lowStock = self:getLowStock()
     
     for _, item in ipairs(lowStock) do
+        -- Skip items with missing patterns
+        if item.patternStatus == StockKeeper.STATUS_NO_PATTERN then
+            goto continue
+        end
+        
         -- Check if already crafting
         local isCrafting = self.bridge:isItemCrafting(item.name)
         
-        if not isCrafting then
-            -- Check if craftable
-            if self.bridge:isCraftable(item.name) then
-                -- Request craft
-                local success = self.bridge:craftItem(item.name, item.needed)
-                if success then
-                    self.craftingQueue[item.name] = {
-                        amount = item.needed,
-                        requestTime = os.epoch("utc")
-                    }
+        if isCrafting then
+            -- Update status
+            self:updateItemCraftStatus(item.name, StockKeeper.STATUS_CRAFTING)
+        else
+            -- Try to craft
+            local success, reason = self.bridge:craftItem(item.name, item.needed)
+            
+            if success then
+                self.craftingQueue[item.name] = {
+                    amount = item.needed,
+                    requestTime = os.epoch("utc")
+                }
+                self:updateItemCraftStatus(item.name, StockKeeper.STATUS_CRAFTING)
+            else
+                -- Track the failure reason
+                if reason == "no_pattern" then
+                    self:updateItemCraftStatus(item.name, StockKeeper.STATUS_NO_PATTERN)
+                    -- Mark pattern as missing
+                    for i, it in ipairs(self.items) do
+                        if it.name == item.name then
+                            self.items[i].patternStatus = StockKeeper.STATUS_NO_PATTERN
+                            break
+                        end
+                    end
+                    self:save()
+                elseif reason == "no_materials" then
+                    self:updateItemCraftStatus(item.name, StockKeeper.STATUS_NO_MATERIALS)
+                else
+                    self:updateItemCraftStatus(item.name, StockKeeper.STATUS_UNKNOWN)
                 end
             end
+        end
+        
+        ::continue::
+    end
+end
+
+-- Update craft status for an item
+function StockKeeper:updateItemCraftStatus(name, status)
+    for i, item in ipairs(self.items) do
+        if item.name == name then
+            self.items[i].lastCraftStatus = status
+            self.items[i].lastCraftTime = os.epoch("utc") / 1000
+            return
         end
     end
 end

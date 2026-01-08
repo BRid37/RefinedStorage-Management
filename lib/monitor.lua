@@ -417,8 +417,9 @@ function Monitor:drawLargeLayout()
     local maxFluids = math.min(4, #fluids)
     for i = 1, maxFluids do
         local fluid = fluids[i]
-        local name = Utils.truncate(fluid.displayName or fluid.name, colWidth - 8)
-        self:write(4, y, name, colors.gray)
+        local name = Utils.truncate(fluid.displayName or fluid.name, colWidth - 12)
+        local fluidAmt = fluid.amount or fluid.count or fluid.stored or 0
+        self:write(4, y, name .. " " .. Utils.formatNumber(fluidAmt) .. "mB", colors.gray)
         y = y + 1
     end
     
