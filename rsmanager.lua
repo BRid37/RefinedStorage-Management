@@ -152,8 +152,10 @@ local menuOptions = {
     {name = "Dashboard", action = "dashboard", color = colors.lime},
     {name = "Item Search", action = "search", color = colors.cyan},
     {name = "Stock Keeper", action = "stockkeeper", color = colors.orange},
+    {name = "Item Monitor", action = "itemmonitor", color = colors.lightBlue},
     {name = "Crafting Queue", action = "crafting", color = colors.purple},
     {name = "System Stats", action = "stats", color = colors.yellow},
+    {name = "Logs", action = "logs", color = colors.brown},
     {name = "Settings", action = "settings", color = colors.lightGray},
     {name = "Exit", action = "exit", color = colors.red}
 }
@@ -162,6 +164,9 @@ local menuOptions = {
 local showAddStockItem
 local showEditStockItem
 local showNewCraft
+local showItemMonitor
+local showAddMonitorItem
+local showLogs
 
 -- Draw main menu
 local function drawMainMenu(selected)
@@ -190,16 +195,48 @@ end
 
 -- Dashboard view
 local function showDashboard()
+    local needsFullRedraw = true
+    
     while true do
-        GUI.clear()
-        GUI.drawHeader("Dashboard")
+        -- Only do full clear on first draw or manual refresh
+        if needsFullRedraw then
+            GUI.clear()
+            GUI.drawHeader("Dashboard")
+            
+            -- Static labels (only drawn once)
+            term.setCursorPos(2, 4)
+            term.setTextColor(colors.yellow)
+            term.write("Energy: ")
+            
+            term.setCursorPos(2, 6)
+            term.setTextColor(colors.cyan)
+            term.write("Total Items: ")
+            
+            term.setCursorPos(2, 7)
+            term.setTextColor(colors.cyan)
+            term.write("Unique Types: ")
+            
+            term.setCursorPos(2, 8)
+            term.setTextColor(colors.purple)
+            term.write("Crafting Jobs: ")
+            
+            term.setCursorPos(2, 10)
+            term.setTextColor(colors.orange)
+            term.write("Stock Keeper: ")
+            
+            term.setCursorPos(2, 19)
+            term.setTextColor(colors.gray)
+            term.write("[Q] Back  [R] Refresh")
+            
+            needsFullRedraw = false
+        end
         
         -- Get RS data
-        local energy = bridge:getEnergyStorage()
-        local maxEnergy = bridge:getMaxEnergyStorage()
-        local energyPercent = math.floor((energy / maxEnergy) * 100)
+        local energy = bridge:getEnergyStorage() or 0
+        local maxEnergy = bridge:getMaxEnergyStorage() or 1
+        local energyPercent = maxEnergy > 0 and math.floor((energy / maxEnergy) * 100) or 0
         
-        local items = bridge:listItems()
+        local items = bridge:listItems() or {}
         local totalItems = 0
         local uniqueItems = #items
         for _, item in ipairs(items) do
@@ -208,11 +245,7 @@ local function showDashboard()
         
         local craftingJobs = bridge:getCraftingTasks() or {}
         
-        -- Display stats
-        term.setCursorPos(2, 4)
-        term.setTextColor(colors.yellow)
-        term.write("Energy: ")
-        
+        -- Update dynamic values (clear specific areas first)
         local energyColor = colors.green
         if energyPercent < 25 then energyColor = colors.red
         elseif energyPercent < 50 then energyColor = colors.orange end
@@ -220,41 +253,38 @@ local function showDashboard()
         GUI.drawProgressBar(10, 4, 25, energyPercent, energyColor)
         term.setCursorPos(36, 4)
         term.setTextColor(colors.white)
-        term.write(energyPercent .. "%")
+        term.write(energyPercent .. "%  ")
         
-        term.setCursorPos(2, 6)
-        term.setTextColor(colors.cyan)
-        term.write("Total Items: ")
+        term.setCursorPos(15, 6)
         term.setTextColor(colors.white)
-        term.write(Utils.formatNumber(totalItems))
+        term.write(Utils.formatNumber(totalItems) .. "      ")
         
-        term.setCursorPos(2, 7)
-        term.setTextColor(colors.cyan)
-        term.write("Unique Types: ")
+        term.setCursorPos(16, 7)
         term.setTextColor(colors.white)
-        term.write(tostring(uniqueItems))
+        term.write(tostring(uniqueItems) .. "      ")
         
-        term.setCursorPos(2, 8)
-        term.setTextColor(colors.purple)
-        term.write("Crafting Jobs: ")
+        term.setCursorPos(17, 8)
         term.setTextColor(colors.white)
-        term.write(tostring(#craftingJobs))
+        term.write(tostring(#craftingJobs) .. "      ")
         
         -- Stock keeper status
-        term.setCursorPos(2, 10)
-        term.setTextColor(colors.orange)
-        term.write("Stock Keeper: ")
+        term.setCursorPos(16, 10)
         if stockKeeper:isEnabled() then
             term.setTextColor(colors.green)
-            term.write("ACTIVE")
+            term.write("ACTIVE ")
             term.setTextColor(colors.gray)
-            term.write(" (" .. stockKeeper:getActiveCount() .. " items)")
+            term.write("(" .. stockKeeper:getActiveCount() .. " items)  ")
         else
             term.setTextColor(colors.red)
-            term.write("DISABLED")
+            term.write("DISABLED          ")
         end
         
-        -- Low stock alerts
+        -- Low stock alerts (clear area first)
+        for clearY = 12, 17 do
+            term.setCursorPos(2, clearY)
+            term.write(string.rep(" ", 45))
+        end
+        
         local lowStock = stockKeeper:getLowStock()
         if #lowStock > 0 then
             term.setCursorPos(2, 12)
@@ -272,10 +302,6 @@ local function showDashboard()
             end
         end
         
-        term.setCursorPos(2, 19)
-        term.setTextColor(colors.gray)
-        term.write("[Q] Back  [R] Refresh")
-        
         -- Wait for input or timeout
         local timer = os.startTimer(config.refreshRate or 5)
         while true do
@@ -284,6 +310,7 @@ local function showDashboard()
                 if key == keys.q then
                     return
                 elseif key == keys.r then
+                    needsFullRedraw = true
                     break
                 end
             elseif event == "timer" and key == timer then
@@ -413,9 +440,15 @@ local function showStockKeeper()
                 term.setBackgroundColor(colors.gray)
             end
             
-            -- Status indicator
+            -- Status indicator - check pattern status first
             local current = bridge:getItemAmount(item.name)
-            if current >= item.amount then
+            if item.patternStatus == "no_pattern" then
+                term.setTextColor(colors.magenta)
+                term.write("X")  -- Pattern missing
+            elseif item.lastCraftStatus == "no_materials" then
+                term.setTextColor(colors.yellow)
+                term.write("M")  -- Missing materials
+            elseif current >= item.amount then
                 term.setTextColor(colors.green)
                 term.write("+")
             elseif current >= item.amount * 0.5 then
@@ -427,61 +460,95 @@ local function showStockKeeper()
             end
             
             term.setTextColor(colors.white)
-            term.write(" " .. Utils.truncate(item.displayName or item.name, 25))
-            term.setCursorPos(32, y)
+            term.write(" " .. Utils.truncate(item.displayName or item.name, 22))
+            term.setCursorPos(28, y)
             term.setTextColor(colors.cyan)
             term.write(Utils.formatNumber(current) .. "/" .. Utils.formatNumber(item.amount))
+            
+            -- Show status suffix
+            if item.patternStatus == "no_pattern" then
+                term.setTextColor(colors.magenta)
+                term.write(" [NO PAT]")
+            elseif item.lastCraftStatus == "no_materials" then
+                term.setTextColor(colors.yellow)
+                term.write(" [NO MAT]")
+            end
             
             term.setBackgroundColor(colors.black)
             y = y + 1
         end
         
-        term.setCursorPos(2, 18)
+        term.setCursorPos(2, 17)
         term.setTextColor(colors.gray)
-        term.write("[A]dd [E]dit [D]elete [C]raft Now")
+        term.write("+ OK  ~ Low  ! Critical  X No Pattern  M No Materials")
+        term.setCursorPos(2, 18)
+        term.write("[A]dd [E]dit [D]elete [C]raft [R]efresh Patterns")
         term.setCursorPos(2, 19)
         term.write("[Q]Back [T]oggle [S]ave")
         
-        local event, key = os.pullEvent()
-        if event == "key" then
-            if key == keys.q then
-                return
-            elseif key == keys.t then
-                stockKeeper:toggle()
-            elseif key == keys.up then
-                selected = math.max(1, selected - 1)
-                if selected <= scroll then
-                    scroll = math.max(0, scroll - 1)
-                end
-            elseif key == keys.down then
-                selected = math.min(#items, selected + 1)
-                if selected > scroll + maxDisplay then
-                    scroll = scroll + 1
-                end
-            elseif key == keys.a then
-                -- Add new item
-                showAddStockItem()
-                items = stockKeeper:getItems()
-            elseif key == keys.e and #items > 0 then
-                -- Edit selected item
-                showEditStockItem(items[selected])
-                items = stockKeeper:getItems()
-            elseif key == keys.d and #items > 0 then
-                -- Delete selected item
-                stockKeeper:removeItem(items[selected].name)
-                items = stockKeeper:getItems()
-                selected = math.min(selected, #items)
-            elseif key == keys.c and #items > 0 then
-                -- Craft selected item now
-                local item = items[selected]
-                local current = bridge:getItemAmount(item.name)
-                local needed = item.amount - current
-                if needed > 0 then
-                    bridge:craftItem(item.name, needed)
-                end
-            elseif key == keys.s then
-                stockKeeper:save()
+        -- Use key event only to avoid char event bleeding into dialogs
+        local event, key = os.pullEvent("key")
+        if key == keys.q then
+            return
+        elseif key == keys.t then
+            stockKeeper:toggle()
+        elseif key == keys.up then
+            selected = math.max(1, selected - 1)
+            if selected <= scroll then
+                scroll = math.max(0, scroll - 1)
             end
+        elseif key == keys.down then
+            selected = math.min(#items, selected + 1)
+            if selected > scroll + maxDisplay then
+                scroll = scroll + 1
+            end
+        elseif key == keys.a then
+            -- Add new item - sleep briefly to let char event pass
+            sleep(0.05)
+            showAddStockItem()
+            items = stockKeeper:getItems()
+        elseif key == keys.e and #items > 0 then
+            -- Edit selected item
+            sleep(0.05)
+            showEditStockItem(items[selected])
+            items = stockKeeper:getItems()
+        elseif key == keys.d and #items > 0 then
+            -- Delete selected item
+            stockKeeper:removeItem(items[selected].name)
+            items = stockKeeper:getItems()
+            selected = math.min(selected, #items)
+        elseif key == keys.c and #items > 0 then
+            -- Craft selected item now
+            local item = items[selected]
+            local current = bridge:getItemAmount(item.name)
+            local needed = item.amount - current
+            if needed > 0 then
+                local success, reason = bridge:craftItem(item.name, needed)
+                if not success then
+                    -- Show brief error
+                    term.setCursorPos(2, 16)
+                    term.setTextColor(colors.red)
+                    if reason == "no_pattern" then
+                        term.write("Error: Pattern missing!")
+                    elseif reason == "no_materials" then
+                        term.write("Error: Missing materials!")
+                    else
+                        term.write("Error: Could not craft")
+                    end
+                    sleep(1)
+                end
+            end
+            items = stockKeeper:getItems()
+        elseif key == keys.r then
+            -- Refresh patterns
+            term.setCursorPos(2, 16)
+            term.setTextColor(colors.yellow)
+            term.write("Refreshing patterns...")
+            bridge:refreshCraftables()
+            stockKeeper:validatePatterns(true)
+            items = stockKeeper:getItems()
+        elseif key == keys.s then
+            stockKeeper:save()
         end
     end
 end
@@ -493,12 +560,24 @@ showAddStockItem = function()
     local selectedResult = 1
     local amount = 64
     local phase = "search" -- search, amount
+    local refreshed = false  -- Track if we've refreshed craftables
     
     while true do
         GUI.clear()
         GUI.drawHeader("Add Stock Item")
         
         if phase == "search" then
+            -- Refresh craftables on first entry (lazy load)
+            if not refreshed then
+                term.setCursorPos(2, 4)
+                term.setTextColor(colors.yellow)
+                term.write("Loading craftable items...")
+                bridge:refreshCraftables()
+                refreshed = true
+                GUI.clear()
+                GUI.drawHeader("Add Stock Item")
+            end
+            
             term.setCursorPos(2, 4)
             term.setTextColor(colors.yellow)
             term.write("Search item: ")
@@ -556,7 +635,7 @@ showAddStockItem = function()
         
         local event, key = os.pullEvent()
         if event == "key" then
-            if key == keys.q or key == keys.backspace then
+            if key == keys.q then
                 if phase == "amount" then
                     phase = "search"
                 else
@@ -564,10 +643,11 @@ showAddStockItem = function()
                 end
             elseif phase == "search" then
                 if key == keys.backspace then
+                    -- Backspace deletes character in search mode
                     searchTerm = searchTerm:sub(1, -2)
                     selectedResult = 1
                     if searchTerm ~= "" then
-                        results = bridge:findItem(searchTerm)
+                        results = bridge:findCraftable(searchTerm)
                     else
                         results = {}
                     end
@@ -600,7 +680,7 @@ showAddStockItem = function()
         elseif event == "char" and phase == "search" then
             searchTerm = searchTerm .. key
             selectedResult = 1
-            results = bridge:findItem(searchTerm)
+            results = bridge:findCraftable(searchTerm)
         elseif event == "char" and phase == "amount" then
             local digit = tonumber(key)
             if digit then
@@ -676,6 +756,325 @@ showEditStockItem = function(item)
     end
 end
 
+-- Item Monitor data (stored separately from stock keeper)
+local monitoredItems = {}
+local MONITOR_FILE = BASE_DIR .. "/config/monitored.lua"
+
+local function loadMonitoredItems()
+    if fs.exists(MONITOR_FILE) then
+        local file = fs.open(MONITOR_FILE, "r")
+        if file then
+            local content = file.readAll()
+            file.close()
+            local data = textutils.unserialise(content)
+            if data then
+                monitoredItems = data
+            end
+        end
+    end
+end
+
+local function saveMonitoredItems()
+    local dir = fs.getDir(MONITOR_FILE)
+    if dir ~= "" and not fs.exists(dir) then
+        fs.makeDir(dir)
+    end
+    local file = fs.open(MONITOR_FILE, "w")
+    if file then
+        file.write(textutils.serialise(monitoredItems))
+        file.close()
+    end
+end
+
+-- Initialize monitored items on load
+loadMonitoredItems()
+
+-- Item Monitor view (monitoring only, no auto-crafting)
+showItemMonitor = function()
+    local selected = 1
+    local scroll = 0
+    local maxDisplay = 10
+    
+    while true do
+        GUI.clear()
+        GUI.drawHeader("Item Monitor")
+        
+        term.setCursorPos(2, 3)
+        term.setTextColor(colors.lightBlue)
+        term.write("Track items with low-stock alerts (no auto-craft)")
+        
+        local y = 5
+        local items = monitoredItems
+        
+        if #items == 0 then
+            term.setCursorPos(2, y)
+            term.setTextColor(colors.gray)
+            term.write("No items being monitored.")
+            term.setCursorPos(2, y + 1)
+            term.write("Press [A] to add an item to monitor.")
+        else
+            for i = scroll + 1, math.min(scroll + maxDisplay, #items) do
+                local item = items[i]
+                local current = bridge:getItemAmount(item.name) or 0
+                local threshold = item.threshold or 0
+                local percent = threshold > 0 and (current / threshold * 100) or 100
+                
+                term.setCursorPos(2, y)
+                if i == selected then
+                    term.setBackgroundColor(colors.gray)
+                end
+                
+                -- Color based on status
+                if current < threshold then
+                    term.setTextColor(colors.red)
+                    term.write("!")
+                elseif current < threshold * 1.5 then
+                    term.setTextColor(colors.orange)
+                    term.write("~")
+                else
+                    term.setTextColor(colors.green)
+                    term.write(" ")
+                end
+                
+                term.setTextColor(colors.white)
+                term.write(" " .. Utils.truncate(item.displayName or item.name, 22))
+                term.setCursorPos(28, y)
+                term.setTextColor(colors.cyan)
+                term.write(Utils.formatNumber(current))
+                term.setTextColor(colors.gray)
+                term.write("/")
+                term.setTextColor(colors.yellow)
+                term.write(Utils.formatNumber(threshold))
+                
+                term.setBackgroundColor(colors.black)
+                y = y + 1
+            end
+        end
+        
+        term.setCursorPos(2, 18)
+        term.setTextColor(colors.gray)
+        term.write("[A]dd [E]dit [D]elete")
+        term.setCursorPos(2, 19)
+        term.write("[Q]Back [S]ave")
+        
+        local event, key = os.pullEvent("key")
+        if key == keys.q then
+            return
+        elseif key == keys.up then
+            selected = math.max(1, selected - 1)
+            if selected <= scroll then
+                scroll = math.max(0, scroll - 1)
+            end
+        elseif key == keys.down then
+            selected = math.min(#items, selected + 1)
+            if selected > scroll + maxDisplay then
+                scroll = scroll + 1
+            end
+        elseif key == keys.a then
+            sleep(0.05)
+            showAddMonitorItem()
+        elseif key == keys.e and #items > 0 then
+            sleep(0.05)
+            -- Edit threshold
+            local item = items[selected]
+            local newThreshold = item.threshold or 64
+            
+            while true do
+                GUI.clear()
+                GUI.drawHeader("Edit Monitor Threshold")
+                
+                term.setCursorPos(2, 4)
+                term.setTextColor(colors.yellow)
+                term.write("Item: ")
+                term.setTextColor(colors.cyan)
+                term.write(item.displayName or item.name)
+                
+                term.setCursorPos(2, 6)
+                term.setTextColor(colors.yellow)
+                term.write("Current in system: ")
+                term.setTextColor(colors.white)
+                term.write(Utils.formatNumber(bridge:getItemAmount(item.name) or 0))
+                
+                term.setCursorPos(2, 8)
+                term.setTextColor(colors.yellow)
+                term.write("Low threshold: ")
+                term.setTextColor(colors.white)
+                term.write(tostring(newThreshold) .. "_")
+                
+                term.setCursorPos(2, 10)
+                term.setTextColor(colors.gray)
+                term.write("+/- to adjust, digits to type")
+                
+                term.setCursorPos(2, 19)
+                term.write("[Q] Cancel | [ENTER] Save")
+                
+                local ev, k = os.pullEvent()
+                if ev == "key" then
+                    if k == keys.q then
+                        break
+                    elseif k == keys.enter then
+                        item.threshold = newThreshold
+                        saveMonitoredItems()
+                        break
+                    elseif k == keys.up or k == keys.equals then
+                        newThreshold = newThreshold + 1
+                    elseif k == keys.down or k == keys.minus then
+                        newThreshold = math.max(1, newThreshold - 1)
+                    elseif k == keys.backspace then
+                        newThreshold = math.floor(newThreshold / 10)
+                        if newThreshold < 1 then newThreshold = 1 end
+                    end
+                elseif ev == "char" then
+                    local digit = tonumber(k)
+                    if digit then
+                        newThreshold = newThreshold * 10 + digit
+                        if newThreshold > 999999 then newThreshold = 999999 end
+                    end
+                end
+            end
+        elseif key == keys.d and #items > 0 then
+            table.remove(monitoredItems, selected)
+            saveMonitoredItems()
+            selected = math.min(selected, #items)
+        elseif key == keys.s then
+            saveMonitoredItems()
+        end
+    end
+end
+
+-- Add item to monitor
+showAddMonitorItem = function()
+    local searchTerm = ""
+    local results = {}
+    local selectedResult = 1
+    local threshold = 64
+    local phase = "search"
+    
+    while true do
+        GUI.clear()
+        GUI.drawHeader("Add Monitored Item")
+        
+        if phase == "search" then
+            term.setCursorPos(2, 4)
+            term.setTextColor(colors.yellow)
+            term.write("Search item: ")
+            term.setTextColor(colors.white)
+            term.write(searchTerm .. "_")
+            
+            if #results > 0 then
+                local y = 6
+                for i = 1, math.min(8, #results) do
+                    term.setCursorPos(2, y)
+                    if i == selectedResult then
+                        term.setBackgroundColor(colors.gray)
+                    end
+                    term.setTextColor(colors.cyan)
+                    term.write(Utils.truncate(results[i].displayName or results[i].name, 35))
+                    term.setBackgroundColor(colors.black)
+                    y = y + 1
+                end
+            end
+            
+            term.setCursorPos(2, 19)
+            term.setTextColor(colors.gray)
+            term.write("[Q] Cancel | [ENTER] Select")
+        else
+            local item = results[selectedResult]
+            term.setCursorPos(2, 4)
+            term.setTextColor(colors.yellow)
+            term.write("Item: ")
+            term.setTextColor(colors.cyan)
+            term.write(item.displayName or item.name)
+            
+            term.setCursorPos(2, 6)
+            term.setTextColor(colors.yellow)
+            term.write("Current in system: ")
+            term.setTextColor(colors.white)
+            term.write(Utils.formatNumber(item.amount or item.count or 0))
+            
+            term.setCursorPos(2, 8)
+            term.setTextColor(colors.yellow)
+            term.write("Low threshold: ")
+            term.setTextColor(colors.white)
+            term.write(tostring(threshold) .. "_")
+            
+            term.setCursorPos(2, 10)
+            term.setTextColor(colors.gray)
+            term.write("Alert when stock falls below this")
+            
+            term.setCursorPos(2, 19)
+            term.write("[Q] Back | [ENTER] Add")
+        end
+        
+        local event, key = os.pullEvent()
+        if event == "key" then
+            if key == keys.q then
+                if phase == "threshold" then
+                    phase = "search"
+                else
+                    return
+                end
+            elseif phase == "search" then
+                if key == keys.backspace then
+                    searchTerm = searchTerm:sub(1, -2)
+                    selectedResult = 1
+                    if searchTerm ~= "" then
+                        results = bridge:findItem(searchTerm)
+                    else
+                        results = {}
+                    end
+                elseif key == keys.up then
+                    selectedResult = math.max(1, selectedResult - 1)
+                elseif key == keys.down then
+                    selectedResult = math.min(#results, selectedResult + 1)
+                elseif key == keys.enter and #results > 0 then
+                    phase = "threshold"
+                    threshold = results[selectedResult].amount or 64
+                end
+            else
+                if key == keys.up or key == keys.equals then
+                    threshold = threshold + 1
+                elseif key == keys.down or key == keys.minus then
+                    threshold = math.max(1, threshold - 1)
+                elseif key == keys.backspace then
+                    threshold = math.floor(threshold / 10)
+                    if threshold < 1 then threshold = 1 end
+                elseif key == keys.enter then
+                    local item = results[selectedResult]
+                    -- Check if already monitored
+                    local exists = false
+                    for i, m in ipairs(monitoredItems) do
+                        if m.name == item.name then
+                            monitoredItems[i].threshold = threshold
+                            exists = true
+                            break
+                        end
+                    end
+                    if not exists then
+                        table.insert(monitoredItems, {
+                            name = item.name,
+                            displayName = item.displayName or item.name,
+                            threshold = threshold
+                        })
+                    end
+                    saveMonitoredItems()
+                    return
+                end
+            end
+        elseif event == "char" and phase == "search" then
+            searchTerm = searchTerm .. key
+            selectedResult = 1
+            results = bridge:findItem(searchTerm)
+        elseif event == "char" and phase == "threshold" then
+            local digit = tonumber(key)
+            if digit then
+                threshold = threshold * 10 + digit
+                if threshold > 999999 then threshold = 999999 end
+            end
+        end
+    end
+end
+
 -- Crafting queue view
 local function showCraftingQueue()
     while true do
@@ -699,15 +1098,17 @@ local function showCraftingQueue()
                 
                 term.setCursorPos(2, y)
                 term.setTextColor(colors.cyan)
-                term.write(Utils.truncate(task.name or "Unknown", 25))
+                -- Use displayName first, fall back to name
+                local taskName = task.displayName or task.name or "Unknown"
+                term.write(Utils.truncate(taskName, 25))
                 
                 term.setCursorPos(30, y)
                 term.setTextColor(colors.white)
-                term.write(Utils.formatNumber(task.amount or 0))
+                term.write("x" .. Utils.formatNumber(task.amount or 0))
                 
                 -- Progress if available
                 if task.progress then
-                    term.setCursorPos(40, y)
+                    term.setCursorPos(42, y)
                     term.setTextColor(colors.green)
                     term.write(math.floor(task.progress * 100) .. "%")
                 end
@@ -849,6 +1250,186 @@ showNewCraft = function()
     end
 end
 
+-- Logs viewer
+showLogs = function()
+    local LOG_DIR = BASE_DIR .. "/logs"
+    local logFiles = {}
+    local selectedFile = 1
+    local scroll = 0
+    local lines = {}
+    local viewingFile = false
+    
+    -- Get list of log files
+    local function refreshFiles()
+        logFiles = {}
+        if fs.exists(LOG_DIR) and fs.isDir(LOG_DIR) then
+            for _, file in ipairs(fs.list(LOG_DIR)) do
+                if file:match("%.log") or file:match("%.log%.old") then
+                    table.insert(logFiles, file)
+                end
+            end
+        end
+        table.sort(logFiles)
+    end
+    
+    -- Load a log file
+    local function loadFile(filename)
+        lines = {}
+        local path = LOG_DIR .. "/" .. filename
+        if fs.exists(path) then
+            local file = fs.open(path, "r")
+            if file then
+                local content = file.readAll()
+                file.close()
+                for line in content:gmatch("[^\r\n]+") do
+                    table.insert(lines, line)
+                end
+            end
+        end
+        -- Show most recent lines first (reverse order)
+        local reversed = {}
+        for i = #lines, 1, -1 do
+            table.insert(reversed, lines[i])
+        end
+        lines = reversed
+    end
+    
+    refreshFiles()
+    
+    while true do
+        GUI.clear()
+        
+        if not viewingFile then
+            -- File list view
+            GUI.drawHeader("Logs")
+            
+            if #logFiles == 0 then
+                term.setCursorPos(2, 5)
+                term.setTextColor(colors.gray)
+                term.write("No log files found.")
+                term.setCursorPos(2, 7)
+                term.write("Logs are stored in: " .. LOG_DIR)
+            else
+                term.setCursorPos(2, 3)
+                term.setTextColor(colors.yellow)
+                term.write("Select a log file:")
+                
+                local y = 5
+                for i, file in ipairs(logFiles) do
+                    if y > 16 then break end
+                    term.setCursorPos(2, y)
+                    if i == selectedFile then
+                        term.setBackgroundColor(colors.gray)
+                    end
+                    term.setTextColor(colors.cyan)
+                    
+                    -- Show file size
+                    local path = LOG_DIR .. "/" .. file
+                    local size = fs.exists(path) and fs.getSize(path) or 0
+                    local sizeStr = size > 1024 and string.format("%.1fKB", size/1024) or size .. "B"
+                    
+                    term.write(" " .. file .. " (" .. sizeStr .. ")")
+                    term.setBackgroundColor(colors.black)
+                    y = y + 1
+                end
+            end
+            
+            term.setCursorPos(2, 18)
+            term.setTextColor(colors.gray)
+            term.write("[ENTER] View  [D] Delete  [C] Clear All")
+            term.setCursorPos(2, 19)
+            term.write("[Q] Back  [R] Refresh")
+        else
+            -- File content view
+            GUI.drawHeader("Log: " .. logFiles[selectedFile])
+            
+            local maxLines = 14
+            local y = 3
+            
+            if #lines == 0 then
+                term.setCursorPos(2, 5)
+                term.setTextColor(colors.gray)
+                term.write("Log file is empty.")
+            else
+                term.setCursorPos(2, 3)
+                term.setTextColor(colors.gray)
+                term.write("Showing " .. math.min(#lines, maxLines) .. " of " .. #lines .. " lines (newest first)")
+                y = 5
+                
+                for i = scroll + 1, math.min(scroll + maxLines, #lines) do
+                    term.setCursorPos(2, y)
+                    local line = lines[i] or ""
+                    -- Color based on content
+                    if line:find("Error") or line:find("ERROR") then
+                        term.setTextColor(colors.red)
+                    elseif line:find("Warning") or line:find("WARN") then
+                        term.setTextColor(colors.orange)
+                    else
+                        term.setTextColor(colors.lightGray)
+                    end
+                    term.write(Utils.truncate(line, 48))
+                    y = y + 1
+                end
+            end
+            
+            term.setCursorPos(2, 19)
+            term.setTextColor(colors.gray)
+            term.write("[Q] Back  UP/DOWN Scroll  [R] Refresh")
+        end
+        
+        local event, key = os.pullEvent("key")
+        
+        if not viewingFile then
+            -- File list navigation
+            if key == keys.q then
+                return
+            elseif key == keys.up and #logFiles > 0 then
+                selectedFile = math.max(1, selectedFile - 1)
+            elseif key == keys.down and #logFiles > 0 then
+                selectedFile = math.min(#logFiles, selectedFile + 1)
+            elseif key == keys.enter and #logFiles > 0 then
+                loadFile(logFiles[selectedFile])
+                scroll = 0
+                viewingFile = true
+            elseif key == keys.r then
+                refreshFiles()
+            elseif key == keys.d and #logFiles > 0 then
+                -- Delete selected log
+                local path = LOG_DIR .. "/" .. logFiles[selectedFile]
+                if fs.exists(path) then
+                    fs.delete(path)
+                end
+                refreshFiles()
+                selectedFile = math.min(selectedFile, #logFiles)
+            elseif key == keys.c then
+                -- Clear all logs
+                if fs.exists(LOG_DIR) then
+                    for _, file in ipairs(fs.list(LOG_DIR)) do
+                        fs.delete(LOG_DIR .. "/" .. file)
+                    end
+                end
+                refreshFiles()
+                selectedFile = 1
+            end
+        else
+            -- File content navigation
+            if key == keys.q then
+                viewingFile = false
+            elseif key == keys.up then
+                scroll = math.max(0, scroll - 1)
+            elseif key == keys.down then
+                scroll = math.min(math.max(0, #lines - 14), scroll + 1)
+            elseif key == keys.pageUp then
+                scroll = math.max(0, scroll - 10)
+            elseif key == keys.pageDown then
+                scroll = math.min(math.max(0, #lines - 14), scroll + 10)
+            elseif key == keys.r then
+                loadFile(logFiles[selectedFile])
+            end
+        end
+    end
+end
+
 -- System stats view
 local function showSystemStats()
     while true do
@@ -924,9 +1505,12 @@ local function showSystemStats()
         for i = 1, math.min(3, #fluids) do
             term.setCursorPos(4, y)
             term.setTextColor(colors.cyan)
-            term.write(Utils.truncate(fluids[i].displayName or fluids[i].name, 20))
+            local fluid = fluids[i]
+            term.write(Utils.truncate(fluid.displayName or fluid.name, 20))
             term.setTextColor(colors.white)
-            term.write(": " .. Utils.formatNumber(fluids[i].amount) .. " mB")
+            -- Try different field names for fluid amount
+            local fluidAmt = fluid.amount or fluid.count or fluid.stored or 0
+            term.write(": " .. Utils.formatNumber(fluidAmt) .. " mB")
             y = y + 1
         end
         
@@ -1124,11 +1708,17 @@ local function mainMenu()
             elseif action == "stockkeeper" then
                 safeCall(showStockKeeper)
                 needsRedraw = true
+            elseif action == "itemmonitor" then
+                safeCall(showItemMonitor)
+                needsRedraw = true
             elseif action == "crafting" then
                 safeCall(showCraftingQueue)
                 needsRedraw = true
             elseif action == "stats" then
                 safeCall(showSystemStats)
+                needsRedraw = true
+            elseif action == "logs" then
+                safeCall(showLogs)
                 needsRedraw = true
             elseif action == "settings" then
                 safeCall(showSettings)
