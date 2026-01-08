@@ -2,7 +2,26 @@
 -- Displays RS status on external monitors
 -- Supports scaling for small to large multi-block monitors
 
-local Utils = require("utils")
+-- Utils functions (inline to avoid require issues)
+local Utils = {}
+
+function Utils.formatNumber(num)
+    if not num then return "0" end
+    if num >= 1000000000 then
+        return string.format("%.1fB", num / 1000000000)
+    elseif num >= 1000000 then
+        return string.format("%.1fM", num / 1000000)
+    elseif num >= 1000 then
+        return string.format("%.1fK", num / 1000)
+    end
+    return tostring(math.floor(num))
+end
+
+function Utils.truncate(str, maxLen)
+    if not str then return "" end
+    if #str <= maxLen then return str end
+    return str:sub(1, maxLen - 3) .. "..."
+end
 
 local Monitor = {}
 Monitor.__index = Monitor
