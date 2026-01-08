@@ -133,6 +133,7 @@ local function init()
     
     -- Initialize external monitor if available
     Utils.printC("Checking for external monitor...", colors.yellow)
+    Utils.printC("  Monitored items count: " .. #monitoredItems, colors.gray)
     monitor = Monitor.new(bridge, stockKeeper, monitoredItems, config)
     if monitor:hasMonitor() then
         Utils.printC("[OK] External monitor found", colors.green)
