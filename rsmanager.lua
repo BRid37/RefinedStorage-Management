@@ -158,6 +158,11 @@ local menuOptions = {
     {name = "Exit", action = "exit", color = colors.red}
 }
 
+-- Forward declarations for functions called before definition
+local showAddStockItem
+local showEditStockItem
+local showNewCraft
+
 -- Draw main menu
 local function drawMainMenu(selected)
     GUI.clear()
@@ -482,7 +487,7 @@ local function showStockKeeper()
 end
 
 -- Add stock item dialog
-local function showAddStockItem()
+showAddStockItem = function()
     local searchTerm = ""
     local results = {}
     local selectedResult = 1
@@ -607,7 +612,7 @@ local function showAddStockItem()
 end
 
 -- Edit stock item dialog
-local function showEditStockItem(item)
+showEditStockItem = function(item)
     local amount = item.amount
     
     while true do
@@ -735,7 +740,7 @@ local function showCraftingQueue()
 end
 
 -- New craft dialog
-local function showNewCraft()
+showNewCraft = function()
     local searchTerm = ""
     local results = {}
     local selectedResult = 1
@@ -1032,56 +1037,102 @@ local function showSettings()
     end
 end
 
--- Background stock keeper task
+-- Background stock keeper task (wrapped in error handler)
 local function stockKeeperTask()
     while running do
-        if stockKeeper and stockKeeper:isEnabled() then
-            stockKeeper:check()
+        local ok, err = pcall(function()
+            if stockKeeper and stockKeeper:isEnabled() then
+                stockKeeper:check()
+            end
+        end)
+        if not ok then
+            Utils.log("StockKeeper error: " .. tostring(err), "ERROR")
         end
         sleep(config.craftDelay or 10)
     end
 end
 
--- Background monitor update task
+-- Background monitor update task (wrapped in error handler)
+-- Only updates external monitor, not main terminal
 local function monitorTask()
     while running do
-        if monitor and monitor:hasMonitor() and config.useMonitor then
-            monitor:update()
+        local ok, err = pcall(function()
+            if monitor and monitor:hasMonitor() and config.useMonitor then
+                monitor:update()
+            end
+        end)
+        if not ok then
+            Utils.log("Monitor error: " .. tostring(err), "ERROR")
         end
         sleep(config.refreshRate or 5)
+    end
+end
+
+-- Safe function wrapper for menu actions
+local function safeCall(func, ...)
+    local args = {...}
+    local ok, err = pcall(function()
+        func(table.unpack(args))
+    end)
+    if not ok then
+        -- Show error on screen briefly
+        term.clear()
+        term.setCursorPos(1, 1)
+        term.setTextColor(colors.red)
+        print("Error occurred:")
+        term.setTextColor(colors.white)
+        print(tostring(err))
+        print()
+        term.setTextColor(colors.gray)
+        print("Press any key to continue...")
+        os.pullEvent("key")
+        Utils.log("Menu error: " .. tostring(err), "ERROR")
     end
 end
 
 -- Main menu loop
 local function mainMenu()
     local selected = 1
+    local needsRedraw = true
     
     while running do
-        drawMainMenu(selected)
+        -- Only redraw when needed to prevent flickering
+        if needsRedraw then
+            drawMainMenu(selected)
+            needsRedraw = false
+        end
         
         local event, key = os.pullEvent("key")
         if key == keys.up then
             selected = selected - 1
             if selected < 1 then selected = #menuOptions end
+            needsRedraw = true
         elseif key == keys.down then
             selected = selected + 1
             if selected > #menuOptions then selected = 1 end
+            needsRedraw = true
         elseif key == keys.enter then
             local action = menuOptions[selected].action
             if action == "exit" then
                 running = false
             elseif action == "dashboard" then
-                showDashboard()
+                safeCall(showDashboard)
+                needsRedraw = true
             elseif action == "search" then
-                showItemSearch()
+                safeCall(showItemSearch)
+                needsRedraw = true
             elseif action == "stockkeeper" then
-                showStockKeeper()
+                safeCall(showStockKeeper)
+                needsRedraw = true
             elseif action == "crafting" then
-                showCraftingQueue()
+                safeCall(showCraftingQueue)
+                needsRedraw = true
             elseif action == "stats" then
-                showSystemStats()
+                safeCall(showSystemStats)
+                needsRedraw = true
             elseif action == "settings" then
-                showSettings()
+                safeCall(showSettings)
+                needsRedraw = true
             end
         elseif key == keys.q then
             running = false
@@ -1089,25 +1140,46 @@ local function mainMenu()
     end
 end
 
--- Main entry point
+-- Main entry point with global error handling
 local function main()
-    if not init() then
-        return
-    end
-    
-    -- Run main menu and background tasks in parallel
-    parallel.waitForAny(
-        mainMenu,
-        stockKeeperTask,
-        monitorTask
-    )
+    local ok, err = pcall(function()
+        if not init() then
+            return
+        end
+        
+        -- Run main menu and background tasks in parallel
+        parallel.waitForAny(
+            mainMenu,
+            stockKeeperTask,
+            monitorTask
+        )
+    end)
     
     -- Cleanup
     term.clear()
     term.setCursorPos(1, 1)
     term.setTextColor(colors.white)
-    print("RS Manager shutdown complete.")
+    
+    if not ok then
+        term.setTextColor(colors.red)
+        print("RS Manager crashed!")
+        term.setTextColor(colors.white)
+        print(tostring(err))
+        print()
+        print("Check /rsmanager/logs/ for details.")
+        Utils.log("CRASH: " .. tostring(err), "ERROR")
+    else
+        print("RS Manager shutdown complete.")
+    end
 end
 
--- Run
-main()
+-- Run with top-level error protection
+local ok, err = pcall(main)
+if not ok then
+    term.clear()
+    term.setCursorPos(1, 1)
+    term.setTextColor(colors.red)
+    print("Fatal error:")
+    term.setTextColor(colors.white)
+    print(tostring(err))
+end

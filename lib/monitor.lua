@@ -502,8 +502,8 @@ end
 
 -- Helper methods
 function Monitor:getEnergyData()
-    local energy = self.bridge:getEnergyStorage()
-    local maxEnergy = self.bridge:getMaxEnergyStorage()
+    local energy = self.bridge:getEnergyStorage() or 0
+    local maxEnergy = self.bridge:getMaxEnergyStorage() or 1
     local percent = maxEnergy > 0 and math.floor((energy / maxEnergy) * 100) or 0
     return energy, maxEnergy, percent
 end
