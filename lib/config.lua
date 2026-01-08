@@ -11,6 +11,8 @@ local defaults = {
     stockKeeperEnabled = true,
     maxCraftingJobs = 5,    -- Maximum concurrent crafting jobs
     autoUpdate = true,      -- Check for updates on startup
+    monitorAutoScroll = true,  -- Auto-scroll external monitor lists
+    monitorScrollSpeed = 3,    -- Seconds between scroll steps (1-10)
 }
 
 function Config.getDefaults()
