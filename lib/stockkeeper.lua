@@ -24,6 +24,12 @@ function StockKeeper.new(bridge, configPath)
     self.patternCheckInterval = 60  -- Check patterns every 60 seconds
     
     self:load()
+    
+    -- Validate patterns immediately after loading so items show on monitor at boot
+    if #self.items > 0 then
+        self:validatePatterns(true)
+    end
+    
     return self
 end
 
