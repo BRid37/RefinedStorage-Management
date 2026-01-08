@@ -2,20 +2,30 @@
 -- Version 1.0.0
 -- For CC:Tweaked 1.116.2+ and Advanced Peripherals 0.7.57b+
 
-local BASE_DIR = fs.getDir(shell.getRunningProgram())
-if BASE_DIR == "" then BASE_DIR = "/rsmanager" end
+-- Determine install directory
+local programPath = shell.getRunningProgram()
+local BASE_DIR = fs.getDir(programPath)
+if BASE_DIR == "" or BASE_DIR == "." then 
+    BASE_DIR = "/rsmanager" 
+end
 
--- Add lib to package path
-package.path = BASE_DIR .. "/lib/?.lua;" .. package.path
+-- Load modules using dofile for CC:Tweaked compatibility
+local function loadModule(name)
+    local path = BASE_DIR .. "/lib/" .. name .. ".lua"
+    if fs.exists(path) then
+        return dofile(path)
+    else
+        error("Module not found: " .. path)
+    end
+end
 
--- Load modules
-local Config = require("config")
-local RSBridge = require("rsbridge")
-local StockKeeper = require("stockkeeper")
-local Monitor = require("monitor")
-local GUI = require("gui")
-local Utils = require("utils")
-local Updater = require("updater")
+local Config = loadModule("config")
+local RSBridge = loadModule("rsbridge")
+local StockKeeper = loadModule("stockkeeper")
+local Monitor = loadModule("monitor")
+local GUI = loadModule("gui")
+local Utils = loadModule("utils")
+local Updater = loadModule("updater")
 
 -- Global state
 local running = true
