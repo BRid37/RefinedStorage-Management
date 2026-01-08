@@ -141,8 +141,34 @@ local function init()
     end
     
     print()
-    Utils.printC("System ready! Press any key to continue...", colors.lime)
-    os.pullEvent("key")
+    Utils.printC("System ready! Starting in ", colors.lime)
+    
+    -- Countdown with option to skip
+    for i = 5, 1, -1 do
+        term.setTextColor(colors.yellow)
+        term.write(tostring(i))
+        term.setTextColor(colors.lime)
+        term.write("... ")
+        
+        -- Check for key press to skip countdown
+        local timer = os.startTimer(1)
+        while true do
+            local event, param = os.pullEvent()
+            if event == "timer" and param == timer then
+                break
+            elseif event == "key" then
+                os.cancelTimer(timer)
+                term.setTextColor(colors.lime)
+                print("\nContinuing...")
+                sleep(0.5)
+                return true
+            end
+        end
+    end
+    
+    term.setTextColor(colors.lime)
+    print("\nContinuing...")
+    sleep(0.5)
     
     return true
 end
@@ -1723,6 +1749,7 @@ end
 
 -- Background monitor update task (wrapped in error handler)
 -- Only updates external monitor, not main terminal
+-- Uses timer-based updates for precise timing like reactor controllers
 local function monitorTask()
     while running do
         local ok, err = pcall(function()
@@ -1733,7 +1760,18 @@ local function monitorTask()
         if not ok then
             Utils.log("Monitor error: " .. tostring(err), "ERROR")
         end
-        sleep(config.refreshRate or 5)
+        
+        -- Use timer for precise refresh rate (best practice for CC monitors)
+        local refreshRate = config.refreshRate or 1
+        local timer = os.startTimer(refreshRate)
+        
+        -- Wait for timer, but allow early exit if program stops
+        while running do
+            local event, param = os.pullEvent()
+            if event == "timer" and param == timer then
+                break
+            end
+        end
     end
 end
 
@@ -1820,6 +1858,11 @@ local function main()
     local ok, err = pcall(function()
         if not init() then
             return
+        end
+        
+        -- Do initial monitor update to show stock keeper items immediately
+        if monitor and monitor:hasMonitor() and config.useMonitor then
+            monitor:update()
         end
         
         -- Run main menu and background tasks in parallel
