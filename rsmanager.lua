@@ -440,13 +440,19 @@ local function showStockKeeper()
                 term.setBackgroundColor(colors.gray)
             end
             
-            -- Status indicator - check pattern status first
+            -- Status indicator - prioritize actual stock level
             local current = bridge:getItemAmount(item.name) or 0
             local target = item.amount or 1
+            
+            -- Clear stale craft status if item is now stocked
+            if current >= target and (item.lastCraftStatus == "no_materials" or item.lastCraftStatus == "crafting") then
+                item.lastCraftStatus = nil
+            end
+            
             if item.patternStatus == "no_pattern" then
                 term.setTextColor(colors.magenta)
                 term.write("X")  -- Pattern missing
-            elseif item.lastCraftStatus == "no_materials" then
+            elseif current < target and item.lastCraftStatus == "no_materials" then
                 term.setTextColor(colors.yellow)
                 term.write("M")  -- Missing materials
             elseif current >= target then
@@ -526,7 +532,12 @@ local function showStockKeeper()
             local needed = target - current
             if needed > 0 then
                 local success, reason = bridge:craftItem(item.name, needed)
-                if not success then
+                if success then
+                    -- Refresh monitor immediately to show crafting job
+                    if monitor and monitor:hasMonitor() and config.useMonitor then
+                        monitor:update()
+                    end
+                else
                     -- Show brief error
                     term.setCursorPos(2, 16)
                     term.setTextColor(colors.red)
@@ -560,7 +571,7 @@ showAddStockItem = function()
     local searchTerm = ""
     local results = {}
     local selectedResult = 1
-    local amount = 64
+    local amount = ""  -- Changed to string for direct input
     local phase = "search" -- search, amount
     local refreshed = false  -- Track if we've refreshed craftables
     local needsRedraw = true
@@ -625,13 +636,16 @@ showAddStockItem = function()
             term.setTextColor(colors.yellow)
             term.write("Target amount: ")
             term.setTextColor(colors.white)
-            term.write(tostring(amount) .. "_")
+            if amount == "" then
+                term.setTextColor(colors.gray)
+                term.write("(type number)")
+            else
+                term.write(tostring(amount) .. "_")
+            end
             
             term.setCursorPos(2, 10)
             term.setTextColor(colors.gray)
-            term.write("+/- adjust | PgUp/PgDn +/-64")
-            term.setCursorPos(2, 11)
-            term.write("Type digits | Backspace delete")
+            term.write("Type number | Backspace to delete")
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
@@ -672,31 +686,24 @@ showAddStockItem = function()
                     needsRedraw = true
                 elseif key == keys.enter and #results > 0 then
                     phase = "amount"
-                    local itemAmt = results[selectedResult].amount or results[selectedResult].count or 0
-                    amount = (itemAmt > 0) and itemAmt or 64
+                    amount = ""  -- Start with empty string for typing
                     needsRedraw = true
                 end
             else -- amount phase
-                if key == keys.up or key == keys.equals then
-                    amount = amount + 1
-                    needsRedraw = true
-                elseif key == keys.down or key == keys.minus then
-                    amount = math.max(1, amount - 1)
-                    needsRedraw = true
-                elseif key == keys.pageUp then
-                    amount = amount + 64
-                    needsRedraw = true
-                elseif key == keys.pageDown then
-                    amount = math.max(1, amount - 64)
-                    needsRedraw = true
-                elseif key == keys.backspace then
-                    amount = math.floor(amount / 10)
-                    if amount < 1 then amount = 1 end
-                    needsRedraw = true
+                if key == keys.backspace then
+                    if #amount > 0 then
+                        amount = amount:sub(1, -2)
+                        needsRedraw = true
+                    end
                 elseif key == keys.enter then
-                    local item = results[selectedResult]
-                    stockKeeper:addItem(item.name, amount, item.displayName)
-                    return
+                    local amountNum = tonumber(amount)
+                    if amountNum and amountNum >= 1 and amountNum <= 999999 then
+                        local item = results[selectedResult]
+                        stockKeeper:addItem(item.name, amountNum, item.displayName)
+                        return
+                    else
+                        needsRedraw = true
+                    end
                 end
             end
         elseif event == "char" and phase == "search" then
@@ -706,10 +713,14 @@ showAddStockItem = function()
             needsRedraw = true
         elseif event == "char" and phase == "amount" then
             local digit = tonumber(key)
-            if digit then
-                amount = amount * 10 + digit
-                if amount > 999999 then amount = 999999 end
-                needsRedraw = true
+            if digit ~= nil then
+                amount = amount .. key
+                local testNum = tonumber(amount)
+                if testNum and testNum <= 999999 then
+                    needsRedraw = true
+                else
+                    amount = amount:sub(1, -2)
+                end
             end
         end
     end
@@ -718,9 +729,10 @@ end
 -- Edit stock item dialog
 showEditStockItem = function(item)
     if not item then return end
-    local amount = item.amount or 64
+    local inputStr = ""
+    local needsRedraw = true
     
-    while true do
+    local function draw()
         GUI.clear()
         GUI.drawHeader("Edit Stock Item")
         
@@ -732,7 +744,7 @@ showEditStockItem = function(item)
         
         term.setCursorPos(2, 6)
         term.setTextColor(colors.yellow)
-        term.write("Current target: ")
+        term.write("Previous target: ")
         term.setTextColor(colors.white)
         term.write(tostring(item.amount or 0))
         
@@ -740,42 +752,56 @@ showEditStockItem = function(item)
         term.setTextColor(colors.yellow)
         term.write("New target: ")
         term.setTextColor(colors.white)
-        term.write(tostring(amount) .. "_")
+        if inputStr == "" then
+            term.setTextColor(colors.gray)
+            term.write("(type number)")
+        else
+            term.write(inputStr .. "_")
+        end
         
         term.setCursorPos(2, 10)
         term.setTextColor(colors.gray)
-        term.write("+/- to adjust by 1")
-        term.setCursorPos(2, 11)
-        term.write("PgUp/PgDn to adjust by 64")
+        term.write("Type number | Backspace to delete")
         
         term.setCursorPos(2, 19)
         term.setTextColor(colors.gray)
         term.write("[Q] Cancel | [ENTER] Save")
+    end
+    
+    while true do
+        if needsRedraw then
+            draw()
+            needsRedraw = false
+        end
         
         local event, key = os.pullEvent()
         if event == "key" then
-            if key == keys.q or key == keys.backspace then
+            if key == keys.q then
                 return
-            elseif key == keys.up or key == keys.equals then
-                amount = amount + 1
-            elseif key == keys.down or key == keys.minus then
-                amount = math.max(1, amount - 1)
-            elseif key == keys.pageUp then
-                amount = amount + 64
-            elseif key == keys.pageDown then
-                amount = math.max(1, amount - 64)
             elseif key == keys.backspace then
-                amount = math.floor(amount / 10)
-                if amount < 1 then amount = 1 end
+                if #inputStr > 0 then
+                    inputStr = inputStr:sub(1, -2)
+                    needsRedraw = true
+                end
             elseif key == keys.enter then
-                stockKeeper:updateItem(item.name, amount)
-                return
+                local amount = tonumber(inputStr)
+                if amount and amount >= 1 and amount <= 999999 then
+                    stockKeeper:updateItem(item.name, amount)
+                    return
+                else
+                    needsRedraw = true
+                end
             end
         elseif event == "char" then
             local digit = tonumber(key)
-            if digit then
-                amount = amount * 10 + digit
-                if amount > 999999 then amount = 999999 end
+            if digit ~= nil then
+                inputStr = inputStr .. key
+                local testNum = tonumber(inputStr)
+                if testNum and testNum <= 999999 then
+                    needsRedraw = true
+                else
+                    inputStr = inputStr:sub(1, -2)
+                end
             end
         end
     end
@@ -906,9 +932,10 @@ showItemMonitor = function()
             sleep(0.05)
             -- Edit threshold
             local item = items[selected]
-            local newThreshold = item.threshold or 64
+            local inputStr = ""
+            local needsRedraw = true
             
-            while true do
+            local function drawThreshold()
                 GUI.clear()
                 GUI.drawHeader("Edit Monitor Threshold")
                 
@@ -926,38 +953,64 @@ showItemMonitor = function()
                 
                 term.setCursorPos(2, 8)
                 term.setTextColor(colors.yellow)
-                term.write("Low threshold: ")
+                term.write("Previous threshold: ")
                 term.setTextColor(colors.white)
-                term.write(tostring(newThreshold) .. "_")
+                term.write(tostring(item.threshold or 0))
                 
                 term.setCursorPos(2, 10)
+                term.setTextColor(colors.yellow)
+                term.write("New threshold: ")
+                term.setTextColor(colors.white)
+                if inputStr == "" then
+                    term.setTextColor(colors.gray)
+                    term.write("(type number)")
+                else
+                    term.write(inputStr .. "_")
+                end
+                
+                term.setCursorPos(2, 12)
                 term.setTextColor(colors.gray)
-                term.write("+/- to adjust, digits to type")
+                term.write("Type number | Backspace to delete")
                 
                 term.setCursorPos(2, 19)
                 term.write("[Q] Cancel | [ENTER] Save")
+            end
+            
+            while true do
+                if needsRedraw then
+                    drawThreshold()
+                    needsRedraw = false
+                end
                 
                 local ev, k = os.pullEvent()
                 if ev == "key" then
                     if k == keys.q then
                         break
-                    elseif k == keys.enter then
-                        item.threshold = newThreshold
-                        saveMonitoredItems()
-                        break
-                    elseif k == keys.up or k == keys.equals then
-                        newThreshold = newThreshold + 1
-                    elseif k == keys.down or k == keys.minus then
-                        newThreshold = math.max(1, newThreshold - 1)
                     elseif k == keys.backspace then
-                        newThreshold = math.floor(newThreshold / 10)
-                        if newThreshold < 1 then newThreshold = 1 end
+                        if #inputStr > 0 then
+                            inputStr = inputStr:sub(1, -2)
+                            needsRedraw = true
+                        end
+                    elseif k == keys.enter then
+                        local threshold = tonumber(inputStr)
+                        if threshold and threshold >= 1 and threshold <= 999999 then
+                            item.threshold = threshold
+                            saveMonitoredItems()
+                            break
+                        else
+                            needsRedraw = true
+                        end
                     end
                 elseif ev == "char" then
                     local digit = tonumber(k)
-                    if digit then
-                        newThreshold = newThreshold * 10 + digit
-                        if newThreshold > 999999 then newThreshold = 999999 end
+                    if digit ~= nil then
+                        inputStr = inputStr .. k
+                        local testNum = tonumber(inputStr)
+                        if testNum and testNum <= 999999 then
+                            needsRedraw = true
+                        else
+                            inputStr = inputStr:sub(1, -2)
+                        end
                     end
                 end
             end
@@ -1654,7 +1707,11 @@ local function stockKeeperTask()
     while running do
         local ok, err = pcall(function()
             if stockKeeper and stockKeeper:isEnabled() then
-                stockKeeper:check()
+                local craftedAny = stockKeeper:check()
+                -- If we initiated any crafting jobs, refresh monitor immediately
+                if craftedAny and monitor and monitor:hasMonitor() and config.useMonitor then
+                    monitor:update()
+                end
             end
         end)
         if not ok then
