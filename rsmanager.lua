@@ -36,6 +36,44 @@ local stockKeeper = nil
 local monitor = nil
 local updater = nil
 
+-- Item Monitor data (stored separately from stock keeper)
+local monitoredItems = {}
+local MONITOR_FILE = BASE_DIR .. "/config/monitored.lua"
+
+local function loadMonitoredItems()
+    if fs.exists(MONITOR_FILE) then
+        local file = fs.open(MONITOR_FILE, "r")
+        if file then
+            local content = file.readAll()
+            file.close()
+            local data = textutils.unserialise(content)
+            if data and type(data) == "table" then
+                monitoredItems = data
+            end
+        end
+    end
+    -- Ensure monitoredItems is always a table, never nil
+    if not monitoredItems or type(monitoredItems) ~= "table" then
+        monitoredItems = {}
+    end
+end
+
+local function saveMonitoredItems()
+    local dir = fs.getDir(MONITOR_FILE)
+    if dir ~= "" and not fs.exists(dir) then
+        fs.makeDir(dir)
+    end
+    local file = fs.open(MONITOR_FILE, "w")
+    if file then
+        file.write(textutils.serialise(monitoredItems))
+        file.close()
+    end
+    -- Update external monitor reference
+    if monitor then
+        monitor:setMonitoredItems(monitoredItems)
+    end
+end
+
 -- Check for updates at startup
 local function checkUpdates()
     term.clear()
@@ -836,44 +874,6 @@ showEditStockItem = function(item)
                 end
             end
         end
-    end
-end
-
--- Item Monitor data (stored separately from stock keeper)
-local monitoredItems = {}
-local MONITOR_FILE = BASE_DIR .. "/config/monitored.lua"
-
-local function loadMonitoredItems()
-    if fs.exists(MONITOR_FILE) then
-        local file = fs.open(MONITOR_FILE, "r")
-        if file then
-            local content = file.readAll()
-            file.close()
-            local data = textutils.unserialise(content)
-            if data and type(data) == "table" then
-                monitoredItems = data
-            end
-        end
-    end
-    -- Ensure monitoredItems is always a table, never nil
-    if not monitoredItems or type(monitoredItems) ~= "table" then
-        monitoredItems = {}
-    end
-end
-
-local function saveMonitoredItems()
-    local dir = fs.getDir(MONITOR_FILE)
-    if dir ~= "" and not fs.exists(dir) then
-        fs.makeDir(dir)
-    end
-    local file = fs.open(MONITOR_FILE, "w")
-    if file then
-        file.write(textutils.serialise(monitoredItems))
-        file.close()
-    end
-    -- Update external monitor reference
-    if monitor then
-        monitor:setMonitoredItems(monitoredItems)
     end
 end
 
