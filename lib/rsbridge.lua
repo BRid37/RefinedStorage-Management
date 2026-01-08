@@ -328,9 +328,12 @@ function RSBridge:getItem(name)
 end
 
 function RSBridge:getItemAmount(name)
+    if not name then return 0 end
+    
     local item = self:getItem(name)
     if item then
-        return item.amount or 0
+        -- Use dynamic field detection for amount
+        return self:getItemAmountField(item)
     end
     return 0
 end

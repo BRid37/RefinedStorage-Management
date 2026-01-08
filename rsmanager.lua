@@ -133,7 +133,7 @@ local function init()
     
     -- Initialize external monitor if available
     Utils.printC("Checking for external monitor...", colors.yellow)
-    monitor = Monitor.new(bridge, stockKeeper)
+    monitor = Monitor.new(bridge, stockKeeper, monitoredItems)
     if monitor:hasMonitor() then
         Utils.printC("[OK] External monitor found", colors.green)
     else
@@ -616,7 +616,9 @@ showAddStockItem = function()
             term.setTextColor(colors.yellow)
             term.write("Current in system: ")
             term.setTextColor(colors.white)
-            term.write(Utils.formatNumber(item.amount))
+            -- Get actual current amount from storage, not from craftable item
+            local currentAmount = bridge:getItemAmount(item.name) or 0
+            term.write(Utils.formatNumber(currentAmount))
             
             term.setCursorPos(2, 8)
             term.setTextColor(colors.yellow)
@@ -787,6 +789,10 @@ local function saveMonitoredItems()
     if file then
         file.write(textutils.serialise(monitoredItems))
         file.close()
+    end
+    -- Update external monitor reference
+    if monitor then
+        monitor:setMonitoredItems(monitoredItems)
     end
 end
 
