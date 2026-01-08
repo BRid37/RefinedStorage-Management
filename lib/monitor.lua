@@ -34,11 +34,12 @@ Monitor.MEDIUM_HEIGHT = 19 -- 3+ tall
 Monitor.LARGE_WIDTH = 57   -- 6+ wide
 Monitor.LARGE_HEIGHT = 26  -- 4+ tall
 
-function Monitor.new(bridge, stockKeeper, monitoredItems)
+function Monitor.new(bridge, stockKeeper, monitoredItems, config)
     local self = setmetatable({}, Monitor)
     self.bridge = bridge
     self.stockKeeper = stockKeeper
     self.monitoredItems = monitoredItems or {}  -- Item monitor list
+    self.config = config or {}
     self.monitor = nil
     self.scale = 0.5  -- Default scale for larger text
     self.width = 0
@@ -46,6 +47,11 @@ function Monitor.new(bridge, stockKeeper, monitoredItems)
     self.layout = "small"  -- small, medium, large
     self.tooSmall = false
     self.lastDrawn = {}  -- Cache of last drawn values to avoid redraw
+    
+    -- Auto-scroll state
+    self.scrollOffset = 0
+    self.scrollTimer = 0
+    self.lastScrollTime = os.epoch("utc") / 1000
     
     self:findMonitor()
     return self
@@ -875,27 +881,94 @@ function Monitor:drawLargeLayoutDynamic()
     
     if hasStock then
         local status = self.stockKeeper:getStatus()
+        local allItems = self.stockKeeper:getItems()
         self:writePadded(col2X, y, "=== Stock Keeper ===", colWidth, colors.orange)
         y = y + 1
         
         if status.enabled then
-            self:writePadded(col2X, y, "Active: " .. status.satisfied .. "/" .. status.total .. " OK", colWidth, colors.green)
+            self:writePadded(col2X, y, "OK:" .. status.satisfied .. " Low:" .. status.low .. " Crit:" .. status.critical, colWidth, colors.white)
         else
             self:writePadded(col2X, y, "DISABLED", colWidth, colors.red)
         end
         y = y + 2
         
-        local lowStock = self.stockKeeper:getLowStock()
-        local maxShow = math.min(self.height - y - 2, #lowStock)
-        for i = 1, maxShow do
-            local item = lowStock[i]
-            if item then
-                local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 12)
-                local amtStr = Utils.formatNumber(item.current or 0) .. "/" .. Utils.formatNumber(item.target or 0)
-                local color = item.patternStatus == "no_pattern" and colors.magenta or colors.red
-                self:writePadded(col2X, y, name, colWidth - #amtStr - 1, color)
-                self:writePadded(col2X + colWidth - #amtStr - 1, y, amtStr, #amtStr + 1, colors.white)
-                y = y + 1
+        -- Auto-scroll through all items if enabled
+        local maxShow = self.height - y - 1
+        local totalItems = #allItems
+        
+        if self.config.monitorAutoScroll and totalItems > maxShow then
+            -- Update scroll position
+            local now = os.epoch("utc") / 1000
+            local scrollSpeed = self.config.monitorScrollSpeed or 3
+            if now - self.lastScrollTime >= scrollSpeed then
+                self.scrollOffset = (self.scrollOffset + 1) % math.max(1, totalItems - maxShow + 1)
+                self.lastScrollTime = now
+            end
+            
+            -- Display scrolled items
+            for i = 1, maxShow do
+                local idx = self.scrollOffset + i
+                if idx <= totalItems then
+                    local item = allItems[idx]
+                    if item then
+                        local current = self.bridge:getItemAmount(item.name) or 0
+                        local target = item.amount or 1
+                        local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 15)
+                        
+                        -- Status indicator
+                        local statusChar = "+"
+                        local statusColor = colors.green
+                        if item.patternStatus == "no_pattern" then
+                            statusChar = "X"
+                            statusColor = colors.magenta
+                        elseif item.lastCraftStatus == "no_materials" then
+                            statusChar = "M"
+                            statusColor = colors.yellow
+                        elseif current < target then
+                            statusChar = "!"
+                            statusColor = colors.red
+                        elseif current < target * 1.5 then
+                            statusChar = "~"
+                            statusColor = colors.orange
+                        end
+                        
+                        local amtStr = Utils.formatNumber(current) .. "/" .. Utils.formatNumber(target)
+                        self:writePadded(col2X, y, statusChar .. " " .. name, colWidth - #amtStr - 1, statusColor)
+                        self:writePadded(col2X + colWidth - #amtStr - 1, y, amtStr, #amtStr + 1, colors.white)
+                        y = y + 1
+                    end
+                end
+            end
+        else
+            -- No scroll, show first items
+            for i = 1, math.min(maxShow, totalItems) do
+                local item = allItems[i]
+                if item then
+                    local current = self.bridge:getItemAmount(item.name) or 0
+                    local target = item.amount or 1
+                    local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 15)
+                    
+                    local statusChar = "+"
+                    local statusColor = colors.green
+                    if item.patternStatus == "no_pattern" then
+                        statusChar = "X"
+                        statusColor = colors.magenta
+                    elseif item.lastCraftStatus == "no_materials" then
+                        statusChar = "M"
+                        statusColor = colors.yellow
+                    elseif current < target then
+                        statusChar = "!"
+                        statusColor = colors.red
+                    elseif current < target * 1.5 then
+                        statusChar = "~"
+                        statusColor = colors.orange
+                    end
+                    
+                    local amtStr = Utils.formatNumber(current) .. "/" .. Utils.formatNumber(target)
+                    self:writePadded(col2X, y, statusChar .. " " .. name, colWidth - #amtStr - 1, statusColor)
+                    self:writePadded(col2X + colWidth - #amtStr - 1, y, amtStr, #amtStr + 1, colors.white)
+                    y = y + 1
+                end
             end
         end
     else

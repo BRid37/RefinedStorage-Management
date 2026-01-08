@@ -133,7 +133,7 @@ local function init()
     
     -- Initialize external monitor if available
     Utils.printC("Checking for external monitor...", colors.yellow)
-    monitor = Monitor.new(bridge, stockKeeper, monitoredItems)
+    monitor = Monitor.new(bridge, stockKeeper, monitoredItems, config)
     if monitor:hasMonitor() then
         Utils.printC("[OK] External monitor found", colors.green)
     else
@@ -481,9 +481,9 @@ local function showStockKeeper()
         
         term.setCursorPos(2, 17)
         term.setTextColor(colors.gray)
-        term.write("+ OK  ~ Low  ! Critical  X No Pattern  M No Materials")
+        term.write("+ OK  ~ Low  ! Crit  X NoPat  M NoMat")
         term.setCursorPos(2, 18)
-        term.write("[A]dd [E]dit [D]elete [C]raft [R]efresh Patterns")
+        term.write("[A]dd [E]dit [D]el [C]raft [R]efresh")
         term.setCursorPos(2, 19)
         term.write("[Q]Back [T]oggle [S]ave")
         
@@ -563,8 +563,9 @@ showAddStockItem = function()
     local amount = 64
     local phase = "search" -- search, amount
     local refreshed = false  -- Track if we've refreshed craftables
+    local needsRedraw = true
     
-    while true do
+    local function draw()
         GUI.clear()
         GUI.drawHeader("Add Stock Item")
         
@@ -602,7 +603,7 @@ showAddStockItem = function()
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
-            term.write("[Q] Cancel | [ENTER] Select | UP/DOWN Navigate")
+            term.write("[Q] Cancel | [ENTER] Select | UP/DOWN")
             
         else -- amount phase
             local item = results[selectedResult]
@@ -628,13 +629,20 @@ showAddStockItem = function()
             
             term.setCursorPos(2, 10)
             term.setTextColor(colors.gray)
-            term.write("+/- to adjust by 1")
+            term.write("+/- adjust | PgUp/PgDn +/-64")
             term.setCursorPos(2, 11)
-            term.write("PgUp/PgDn to adjust by 64")
+            term.write("Type digits | Backspace delete")
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
             term.write("[Q] Back | [ENTER] Confirm")
+        end
+    end
+    
+    while true do
+        if needsRedraw then
+            draw()
+            needsRedraw = false
         end
         
         local event, key = os.pullEvent()
@@ -642,12 +650,12 @@ showAddStockItem = function()
             if key == keys.q then
                 if phase == "amount" then
                     phase = "search"
+                    needsRedraw = true
                 else
                     return
                 end
             elseif phase == "search" then
                 if key == keys.backspace then
-                    -- Backspace deletes character in search mode
                     searchTerm = searchTerm:sub(1, -2)
                     selectedResult = 1
                     if searchTerm ~= "" then
@@ -655,27 +663,36 @@ showAddStockItem = function()
                     else
                         results = {}
                     end
+                    needsRedraw = true
                 elseif key == keys.up then
                     selectedResult = math.max(1, selectedResult - 1)
+                    needsRedraw = true
                 elseif key == keys.down then
                     selectedResult = math.min(#results, selectedResult + 1)
+                    needsRedraw = true
                 elseif key == keys.enter and #results > 0 then
                     phase = "amount"
                     local itemAmt = results[selectedResult].amount or results[selectedResult].count or 0
                     amount = (itemAmt > 0) and itemAmt or 64
+                    needsRedraw = true
                 end
             else -- amount phase
                 if key == keys.up or key == keys.equals then
                     amount = amount + 1
+                    needsRedraw = true
                 elseif key == keys.down or key == keys.minus then
                     amount = math.max(1, amount - 1)
+                    needsRedraw = true
                 elseif key == keys.pageUp then
                     amount = amount + 64
+                    needsRedraw = true
                 elseif key == keys.pageDown then
                     amount = math.max(1, amount - 64)
+                    needsRedraw = true
                 elseif key == keys.backspace then
                     amount = math.floor(amount / 10)
                     if amount < 1 then amount = 1 end
+                    needsRedraw = true
                 elseif key == keys.enter then
                     local item = results[selectedResult]
                     stockKeeper:addItem(item.name, amount, item.displayName)
@@ -686,11 +703,13 @@ showAddStockItem = function()
             searchTerm = searchTerm .. key
             selectedResult = 1
             results = bridge:findCraftable(searchTerm)
+            needsRedraw = true
         elseif event == "char" and phase == "amount" then
             local digit = tonumber(key)
             if digit then
                 amount = amount * 10 + digit
                 if amount > 999999 then amount = 999999 end
+                needsRedraw = true
             end
         end
     end
@@ -863,9 +882,9 @@ showItemMonitor = function()
         
         term.setCursorPos(2, 18)
         term.setTextColor(colors.gray)
-        term.write("[A]dd [E]dit [D]elete")
+        term.write("[A]dd [E]dit [D]el [S]ave")
         term.setCursorPos(2, 19)
-        term.write("[Q]Back [S]ave")
+        term.write("[Q]Back  UP/DOWN scroll")
         
         local event, key = os.pullEvent("key")
         if key == keys.q then
