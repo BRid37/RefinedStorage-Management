@@ -5,7 +5,7 @@ local Updater = {}
 Updater.__index = Updater
 
 -- Version info (for display only)
-Updater.VERSION = "1.3.14"
+Updater.VERSION = "1.3.15"
 Updater.GITHUB_USER = "BRid37"
 Updater.GITHUB_REPO = "RefinedStorage-Management"
 Updater.GITHUB_BRANCH = "main"
