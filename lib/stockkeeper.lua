@@ -276,6 +276,7 @@ function StockKeeper:check()
     self:validatePatterns()
     
     local lowStock = self:getLowStock()
+    local craftedAny = false
     
     for _, item in ipairs(lowStock) do
         -- Skip items with missing patterns
@@ -299,6 +300,7 @@ function StockKeeper:check()
                     requestTime = os.epoch("utc")
                 }
                 self:updateItemCraftStatus(item.name, StockKeeper.STATUS_CRAFTING)
+                craftedAny = true
             else
                 -- Track the failure reason
                 if reason == "no_pattern" then
@@ -321,6 +323,8 @@ function StockKeeper:check()
         
         ::continue::
     end
+    
+    return craftedAny
 end
 
 -- Update craft status for an item
