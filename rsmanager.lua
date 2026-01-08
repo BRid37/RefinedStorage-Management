@@ -113,6 +113,11 @@ local function init()
     config = Config.load(BASE_DIR .. "/config/settings.lua")
     Utils.printC("[OK] Configuration loaded", colors.green)
     
+    -- Load monitored items
+    Utils.printC("Loading monitored items...", colors.yellow)
+    loadMonitoredItems()
+    Utils.printC("[OK] Monitored items loaded: " .. #monitoredItems, colors.green)
+    
     -- Initialize RS Bridge
     Utils.printC("Connecting to RS Bridge...", colors.yellow)
     bridge = RSBridge.new()
@@ -871,9 +876,6 @@ local function saveMonitoredItems()
         monitor:setMonitoredItems(monitoredItems)
     end
 end
-
--- Initialize monitored items on load
-loadMonitoredItems()
 
 -- Item Monitor view (monitoring only, no auto-crafting)
 showItemMonitor = function()
