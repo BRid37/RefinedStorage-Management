@@ -139,16 +139,17 @@ end
 function StockKeeper:getLowStock()
     local lowStock = {}
     
-    for _, item in ipairs(self.items) do
-        if item.enabled ~= false then
-            local current = self.bridge:getItemAmount(item.name)
-            if current < item.amount then
+    for _, item in ipairs(self.items or {}) do
+        if item and item.enabled ~= false and item.name and item.amount then
+            local current = self.bridge:getItemAmount(item.name) or 0
+            local target = item.amount or 1
+            if current < target then
                 table.insert(lowStock, {
                     name = item.name,
                     displayName = item.displayName or item.name,
                     current = current,
-                    target = item.amount,
-                    needed = item.amount - current,
+                    target = target,
+                    needed = math.max(0, target - current),
                     priority = item.priority or 1
                 })
             end
@@ -157,10 +158,12 @@ function StockKeeper:getLowStock()
     
     -- Sort by priority (higher first), then by percentage
     table.sort(lowStock, function(a, b)
-        if a.priority ~= b.priority then
-            return a.priority > b.priority
+        if (a.priority or 1) ~= (b.priority or 1) then
+            return (a.priority or 1) > (b.priority or 1)
         end
-        return (a.current / a.target) < (b.current / b.target)
+        local aPct = a.target > 0 and (a.current / a.target) or 0
+        local bPct = b.target > 0 and (b.current / b.target) or 0
+        return aPct < bPct
     end)
     
     return lowStock
@@ -200,15 +203,17 @@ function StockKeeper:clearCraftingQueue()
 end
 
 function StockKeeper:getStatus()
-    local total = #self.items
+    local items = self.items or {}
+    local total = #items
     local satisfied = 0
     local low = 0
     local critical = 0
     
-    for _, item in ipairs(self.items) do
-        if item.enabled ~= false then
-            local current = self.bridge:getItemAmount(item.name)
-            local percent = current / item.amount
+    for _, item in ipairs(items) do
+        if item and item.enabled ~= false and item.name then
+            local current = self.bridge:getItemAmount(item.name) or 0
+            local target = item.amount or 1
+            local percent = target > 0 and (current / target) or 0
             
             if percent >= 1 then
                 satisfied = satisfied + 1
