@@ -590,7 +590,9 @@ function Monitor:getItemData()
     local items = self.bridge:listItems() or {}
     local total = 0
     for _, item in ipairs(items) do
-        total = total + (item.amount or 0)
+        -- Use dynamic field detection for item amounts
+        local amount = self.bridge:getItemAmountField(item)
+        total = total + amount
     end
     return items, total
 end
@@ -703,10 +705,10 @@ function Monitor:drawSmallLayoutDynamic()
         self:writePadded(2, y, "OK:" .. status.satisfied .. " Low:" .. status.low .. " Crit:" .. status.critical, lineWidth, colors.white)
         y = y + 2
         
-        local lowStock = self.stockKeeper:getLowStock()
-        local maxShow = math.min(4, #lowStock, self.height - y - 2)
+        -- Show all stock keeper items, not just low stock
+        local maxShow = math.min(6, #allItems, self.height - y - 2)
         for i = 1, maxShow do
-            local item = lowStock[i]
+            local item = allItems[i]
             if item then
                 local current = self.bridge:getItemAmount(item.name) or 0
                 local target = item.amount or 0
@@ -722,17 +724,23 @@ function Monitor:drawSmallLayoutDynamic()
     
     -- Item Monitor (if has items)
     if hasMonitor and y < self.height - 2 then
-        local alerts = self:getMonitorAlerts()
-        if #alerts > 0 then
-            self:writePadded(2, y, "Alerts: " .. #alerts .. " low", lineWidth, colors.lightBlue)
-            y = y + 1
-            local maxShow = math.min(2, #alerts, self.height - y - 1)
-            for i = 1, maxShow do
-                local item = alerts[i]
-                self:writePadded(2, y, "! " .. Utils.truncate(item.displayName or item.name or "?", lineWidth - 2), lineWidth, colors.yellow)
+        self:writePadded(2, y, "=== Item Monitor ===", lineWidth, colors.lightBlue)
+        y = y + 1
+        
+        local maxShow = math.min(4, #self.monitoredItems, self.height - y - 1)
+        for i = 1, maxShow do
+            local item = self.monitoredItems[i]
+            if item then
+                local current = self.bridge:getItemAmount(item.name) or 0
+                local threshold = item.threshold or 0
+                local name = Utils.truncate(item.displayName or item.name or "?", lineWidth - 12)
+                local statusChar = current < threshold and "!" or " "
+                local statusColor = current < threshold and colors.red or colors.green
+                self:writePadded(2, y, statusChar .. " " .. name .. " " .. current, lineWidth, statusColor)
                 y = y + 1
             end
         end
+        y = y + 1
     end
     
     -- Clear remaining lines
