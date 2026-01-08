@@ -336,11 +336,11 @@ local function showItemSearch()
         
         term.setCursorPos(2, 19)
         term.setTextColor(colors.gray)
-        term.write("[ESC] Back | Type to search")
+        term.write("[Q] Back | Type to search")
         
         local event, key = os.pullEvent()
         if event == "key" then
-            if key == keys.escape or key == keys.q then
+            if key == keys.q or key == keys.backspace then
                 return
             elseif key == keys.backspace then
                 searchTerm = searchTerm:sub(1, -2)
@@ -516,7 +516,7 @@ local function showAddStockItem()
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
-            term.write("[ESC] Cancel | [ENTER] Select | UP/DOWN Navigate")
+            term.write("[Q] Cancel | [ENTER] Select | UP/DOWN Navigate")
             
         else -- amount phase
             local item = results[selectedResult]
@@ -546,12 +546,12 @@ local function showAddStockItem()
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
-            term.write("[ESC] Back | [ENTER] Confirm")
+            term.write("[Q] Back | [ENTER] Confirm")
         end
         
         local event, key = os.pullEvent()
         if event == "key" then
-            if key == keys.escape then
+            if key == keys.q or key == keys.backspace then
                 if phase == "amount" then
                     phase = "search"
                 else
@@ -640,11 +640,11 @@ local function showEditStockItem(item)
         
         term.setCursorPos(2, 19)
         term.setTextColor(colors.gray)
-        term.write("[ESC] Cancel | [ENTER] Save")
+        term.write("[Q] Cancel | [ENTER] Save")
         
         local event, key = os.pullEvent()
         if event == "key" then
-            if key == keys.escape then
+            if key == keys.q or key == keys.backspace then
                 return
             elseif key == keys.up or key == keys.equals then
                 amount = amount + 1
@@ -769,7 +769,7 @@ local function showNewCraft()
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
-            term.write("[ESC] Cancel | [ENTER] Select")
+            term.write("[Q] Cancel | [ENTER] Select")
             
         else
             local item = results[selectedResult]
@@ -787,12 +787,12 @@ local function showNewCraft()
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
-            term.write("[ESC] Back | [ENTER] Start Craft")
+            term.write("[Q] Back | [ENTER] Start Craft")
         end
         
         local event, key = os.pullEvent()
         if event == "key" then
-            if key == keys.escape then
+            if key == keys.q or key == keys.backspace then
                 if phase == "amount" then
                     phase = "search"
                 else

@@ -4,10 +4,21 @@
 local RSBridge = {}
 RSBridge.__index = RSBridge
 
+-- Logging helper
+local LOG_FILE = "/rsmanager/logs/rsbridge.log"
+local function log(message)
+    local file = fs.open(LOG_FILE, "a")
+    if file then
+        file.write("[" .. os.date("%H:%M:%S") .. "] " .. tostring(message) .. "\n")
+        file.close()
+    end
+end
+
 function RSBridge.new()
     local self = setmetatable({}, RSBridge)
     self.bridge = nil
     self.connected = false
+    self.methods = {}
     self.cache = {
         items = nil,
         itemsTime = 0,
@@ -24,37 +35,86 @@ function RSBridge:connect()
     self.bridge = peripheral.find("rs_bridge")
     if self.bridge then
         self.connected = true
+        -- Discover available methods
+        self:discoverMethods()
         return true
     end
     return false
+end
+
+function RSBridge:discoverMethods()
+    if not self.bridge then return end
+    
+    local name = peripheral.getName(self.bridge)
+    self.methods = peripheral.getMethods(name)
+    
+    -- Log discovered methods
+    log("=== RS Bridge Methods Discovered ===")
+    for _, method in ipairs(self.methods) do
+        log("  " .. method)
+    end
+    log("=== End Methods ===")
+end
+
+function RSBridge:hasMethod(methodName)
+    for _, m in ipairs(self.methods) do
+        if m == methodName then return true end
+    end
+    return false
+end
+
+function RSBridge:call(methodName, ...)
+    if not self.connected or not self.bridge then 
+        return nil, "Not connected"
+    end
+    
+    local ok, result = pcall(function(...)
+        return self.bridge[methodName](...)
+    end, ...)
+    
+    if not ok then
+        log("Error calling " .. methodName .. ": " .. tostring(result))
+        return nil, result
+    end
+    return result
 end
 
 function RSBridge:isConnected()
     if not self.connected or not self.bridge then
         return false
     end
-    -- Test connection
-    local ok = pcall(function() self.bridge.getEnergyStorage() end)
+    local ok = pcall(function() self.bridge.getEnergyUsage() end)
     return ok
 end
 
--- Energy methods
+-- Energy methods (these work in AP 0.7.57b)
 function RSBridge:getEnergyStorage()
     if not self.connected then return 0 end
-    local ok, result = pcall(function() return self.bridge.getEnergyStorage() end)
-    return ok and result or 0
+    -- Try different method names
+    local result = self:call("getEnergyStorage")
+    if result then return result end
+    
+    result = self:call("getStoredEnergy")
+    if result then return result end
+    
+    return 0
 end
 
 function RSBridge:getMaxEnergyStorage()
     if not self.connected then return 1 end
-    local ok, result = pcall(function() return self.bridge.getMaxEnergyStorage() end)
-    return ok and result or 1
+    local result = self:call("getMaxEnergyStorage")
+    if result then return result end
+    
+    result = self:call("getEnergyCapacity")
+    if result then return result end
+    
+    return 1
 end
 
 function RSBridge:getEnergyUsage()
     if not self.connected then return 0 end
-    local ok, result = pcall(function() return self.bridge.getEnergyUsage() end)
-    return ok and result or 0
+    local result = self:call("getEnergyUsage")
+    return result or 0
 end
 
 -- Item methods with caching
@@ -66,26 +126,33 @@ function RSBridge:listItems(forceRefresh)
         return self.cache.items
     end
     
-    local ok, result = pcall(function() return self.bridge.listItems() end)
-    if ok and result then
+    -- Try different method names for listing items
+    local result = self:call("listItems")
+    if not result then
+        result = self:call("getItems")
+    end
+    
+    if result and type(result) == "table" then
         self.cache.items = result
         self.cache.itemsTime = now
+        log("listItems returned " .. #result .. " items")
         return result
     end
+    
+    log("listItems failed or returned nil")
     return self.cache.items or {}
 end
 
 function RSBridge:getItem(name)
     if not self.connected then return nil end
     
-    -- Try direct lookup first
-    local ok, result = pcall(function() 
-        return self.bridge.getItem({name = name})
-    end)
+    -- Try direct lookup with table parameter
+    local result = self:call("getItem", {name = name})
+    if result then return result end
     
-    if ok and result then
-        return result
-    end
+    -- Try with just the name string
+    result = self:call("getItem", name)
+    if result then return result end
     
     -- Fallback to searching list
     local items = self:listItems()
@@ -144,12 +211,20 @@ function RSBridge:listFluids(forceRefresh)
         return self.cache.fluids
     end
     
-    local ok, result = pcall(function() return self.bridge.listFluids() end)
-    if ok and result then
+    -- Try different method names
+    local result = self:call("listFluids")
+    if not result then
+        result = self:call("getFluids")
+    end
+    
+    if result and type(result) == "table" then
         self.cache.fluids = result
         self.cache.fluidsTime = now
+        log("listFluids returned " .. #result .. " fluids")
         return result
     end
+    
+    log("listFluids failed or returned nil")
     return self.cache.fluids or {}
 end
 
@@ -162,12 +237,20 @@ function RSBridge:listCraftableItems(forceRefresh)
         return self.cache.craftables
     end
     
-    local ok, result = pcall(function() return self.bridge.listCraftableItems() end)
-    if ok and result then
+    -- Try different method names
+    local result = self:call("listCraftableItems")
+    if not result then
+        result = self:call("getCraftableItems")
+    end
+    
+    if result and type(result) == "table" then
         self.cache.craftables = result
         self.cache.craftablesTime = now
+        log("listCraftableItems returned " .. #result .. " craftables")
         return result
     end
+    
+    log("listCraftableItems failed or returned nil")
     return self.cache.craftables or {}
 end
 
@@ -197,15 +280,15 @@ end
 function RSBridge:isCraftable(name)
     if not self.connected then return false end
     
-    local ok, result = pcall(function()
-        return self.bridge.isItemCraftable({name = name})
-    end)
+    -- Try direct method with table
+    local result = self:call("isItemCraftable", {name = name})
+    if result ~= nil then return result end
     
-    if ok then
-        return result
-    end
+    -- Try with string
+    result = self:call("isItemCraftable", name)
+    if result ~= nil then return result end
     
-    -- Fallback
+    -- Fallback to searching craftables list
     local craftables = self:listCraftableItems()
     for _, item in ipairs(craftables) do
         if item.name == name then
@@ -218,34 +301,43 @@ end
 function RSBridge:craftItem(name, amount)
     if not self.connected then return false, "Not connected" end
     
-    local ok, result = pcall(function()
-        return self.bridge.craftItem({name = name, count = amount})
-    end)
-    
-    if ok then
+    -- Try with table parameter (AP style)
+    local result = self:call("craftItem", {name = name, count = amount})
+    if result then
+        log("craftItem succeeded: " .. name .. " x" .. amount)
         return result
     end
+    
+    -- Try alternate format
+    result = self:call("craftItem", name, amount)
+    if result then
+        log("craftItem (alt) succeeded: " .. name .. " x" .. amount)
+        return result
+    end
+    
+    log("craftItem failed: " .. name)
     return false, "Craft request failed"
 end
 
 function RSBridge:getCraftingTasks()
     if not self.connected then return {} end
     
-    -- Try the standard method first
-    local ok, result = pcall(function()
-        return self.bridge.getCraftingTasks()
-    end)
-    
-    if ok and result then
+    -- Try different method names
+    local result = self:call("craftingTasks")
+    if result and type(result) == "table" then
+        log("craftingTasks returned " .. #result .. " tasks")
         return result
     end
     
-    -- Some versions use different method names
-    ok, result = pcall(function()
-        return self.bridge.listCraftingTasks()
-    end)
+    result = self:call("getCraftingTasks")
+    if result and type(result) == "table" then
+        log("getCraftingTasks returned " .. #result .. " tasks")
+        return result
+    end
     
-    if ok and result then
+    result = self:call("listCraftingTasks")
+    if result and type(result) == "table" then
+        log("listCraftingTasks returned " .. #result .. " tasks")
         return result
     end
     
