@@ -74,24 +74,48 @@ end
 function Monitor:autoScale()
     if not self.monitor then return end
     
-    -- Try different scales to find best fit
-    local scales = {0.5, 1, 1.5, 2}
+    -- Get monitor dimensions at smallest scale to determine optimal scaling
+    self.monitor.setTextScale(0.5)
+    local baseW, baseH = self.monitor.getSize()
+    
+    -- Calculate how much content we need to show
+    local hasStock = self.stockKeeper and self.stockKeeper:getActiveCount() > 0
+    local hasMonitor = self.monitoredItems and #self.monitoredItems > 0
+    local contentSections = 1 -- Always have system info
+    if hasStock then contentSections = contentSections + 1 end
+    if hasMonitor then contentSections = contentSections + 1 end
+    
+    -- Try scales from largest to smallest to maximize readability
+    local scales = {2, 1.5, 1, 0.5}
     
     for _, scale in ipairs(scales) do
         self.monitor.setTextScale(scale)
         local w, h = self.monitor.getSize()
         
+        -- Check if this scale provides enough space for content
+        -- Need at least 18 wide and 12 tall for basic display
         if w >= self.MIN_WIDTH and h >= self.MIN_HEIGHT then
-            self.scale = scale
-            self.width = w
-            self.height = h
-            self:determineLayout()
-            self.tooSmall = false
-            return
+            -- For monitors with little content, prefer larger text
+            if contentSections <= 1 and scale >= 1.5 then
+                self.scale = scale
+                self.width = w
+                self.height = h
+                self:determineLayout()
+                self.tooSmall = false
+                return
+            -- For monitors with more content, ensure we have enough space
+            elseif w >= 25 and h >= 15 then
+                self.scale = scale
+                self.width = w
+                self.height = h
+                self:determineLayout()
+                self.tooSmall = false
+                return
+            end
         end
     end
     
-    -- Monitor too small even at smallest scale
+    -- Fallback to smallest scale
     self.monitor.setTextScale(0.5)
     self.width, self.height = self.monitor.getSize()
     self.tooSmall = self.width < self.MIN_WIDTH or self.height < self.MIN_HEIGHT
@@ -562,14 +586,36 @@ function Monitor:getEnergyColor(percent)
     elseif percent < 50 then return colors.orange
     else return colors.green end
 end
-
 function Monitor:getItemData()
     local items = self.bridge:listItems() or {}
     local total = 0
     for _, item in ipairs(items) do
-        total = total + (item.amount or item.count or 0)
+        total = total + (item.amount or 0)
     end
     return items, total
+end
+
+-- Calculate storage capacity (estimate based on item types)
+-- RS doesn't expose disk capacity directly, so we estimate based on item diversity
+function Monitor:getStorageData()
+    local items = self.bridge:listItems() or {}
+    local itemTypes = #items
+    
+    -- Estimate: Most disk drives hold 1000-4000 item types depending on setup
+    -- We'll estimate capacity based on typical setups
+    local estimatedCapacity = 0
+    if itemTypes < 100 then
+        estimatedCapacity = 1000  -- Small system
+    elseif itemTypes < 500 then
+        estimatedCapacity = 2000  -- Medium system
+    elseif itemTypes < 1500 then
+        estimatedCapacity = 4000  -- Large system
+    else
+        estimatedCapacity = math.ceil(itemTypes / 0.75) -- Assume 75% full
+    end
+    
+    local usedPercent = estimatedCapacity > 0 and math.floor((itemTypes / estimatedCapacity) * 100) or 0
+    return itemTypes, estimatedCapacity, usedPercent
 end
 
 function Monitor:showAlert(message, color)
@@ -654,9 +700,12 @@ function Monitor:drawSmallLayoutDynamic()
     self:drawProgressBar(2, y, self.width - 4, energyPercent, energyColor, false)
     y = y + 2
     
-    -- Items count
+    -- Items count and storage capacity
     local items, totalItems = self:getItemData()
-    self:writePadded(2, y, "Items: " .. Utils.formatNumber(totalItems) .. " (" .. #items .. " types)", lineWidth, colors.cyan)
+    local itemTypes, capacity, storagePercent = self:getStorageData()
+    self:writePadded(2, y, "Items: " .. Utils.formatNumber(totalItems), lineWidth, colors.cyan)
+    y = y + 1
+    self:writePadded(2, y, "Types: " .. itemTypes .. "/" .. capacity .. " (" .. storagePercent .. "%)", lineWidth, colors.white)
     y = y + 2
     
     -- Dynamic sections based on what's active
@@ -728,9 +777,12 @@ function Monitor:drawMediumLayoutDynamic()
     
     -- Storage
     local items, totalItems = self:getItemData()
+    local itemTypes, capacity, storagePercent = self:getStorageData()
     self:writePadded(2, y, "Items: " .. Utils.formatNumber(totalItems), colWidth, colors.cyan)
     y = y + 1
-    self:writePadded(2, y, "Types: " .. #items, colWidth, colors.white)
+    self:writePadded(2, y, "Types: " .. itemTypes .. "/" .. capacity, colWidth, colors.white)
+    y = y + 1
+    self:writePadded(2, y, "Storage: " .. storagePercent .. "%", colWidth, storagePercent > 75 and colors.orange or colors.green)
     y = y + 2
     
     -- Crafting (if active)
@@ -835,9 +887,12 @@ function Monitor:drawLargeLayoutDynamic()
     y = y + 2
     
     local items, totalItems = self:getItemData()
+    local itemTypes, capacity, storagePercent = self:getStorageData()
     self:writePadded(2, y, "Items: " .. Utils.formatNumber(totalItems), colWidth, colors.cyan)
     y = y + 1
-    self:writePadded(2, y, "Types: " .. #items, colWidth, colors.white)
+    self:writePadded(2, y, "Types: " .. itemTypes .. "/" .. capacity, colWidth, colors.white)
+    y = y + 1
+    self:writePadded(2, y, "Capacity: " .. storagePercent .. "%", colWidth, storagePercent > 75 and colors.orange or colors.green)
     y = y + 2
     
     -- Fluids
