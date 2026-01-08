@@ -1,0 +1,10 @@
+# Logs
+logs/
+*.log
+
+# Runtime config (user-specific)
+config/stocklist.lua
+
+# OS files
+.DS_Store
+Thumbs.db
