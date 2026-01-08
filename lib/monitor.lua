@@ -595,28 +595,6 @@ function Monitor:getItemData()
     return items, total
 end
 
--- Calculate storage capacity (estimate based on item types)
--- RS doesn't expose disk capacity directly, so we estimate based on item diversity
-function Monitor:getStorageData()
-    local items = self.bridge:listItems() or {}
-    local itemTypes = #items
-    
-    -- Estimate: Most disk drives hold 1000-4000 item types depending on setup
-    -- We'll estimate capacity based on typical setups
-    local estimatedCapacity = 0
-    if itemTypes < 100 then
-        estimatedCapacity = 1000  -- Small system
-    elseif itemTypes < 500 then
-        estimatedCapacity = 2000  -- Medium system
-    elseif itemTypes < 1500 then
-        estimatedCapacity = 4000  -- Large system
-    else
-        estimatedCapacity = math.ceil(itemTypes / 0.75) -- Assume 75% full
-    end
-    
-    local usedPercent = estimatedCapacity > 0 and math.floor((itemTypes / estimatedCapacity) * 100) or 0
-    return itemTypes, estimatedCapacity, usedPercent
-end
 
 function Monitor:showAlert(message, color)
     if not self.monitor then return end
@@ -691,21 +669,23 @@ function Monitor:drawSmallLayoutDynamic()
     local y = 3
     local lineWidth = self.width - 2
     
-    -- Energy (always show)
+    -- Energy (only show if low)
     local energy, maxEnergy, energyPercent = self:getEnergyData()
     local energyColor = self:getEnergyColor(energyPercent)
     
-    self:writePadded(2, y, "Energy: " .. energyPercent .. "%", lineWidth, colors.yellow)
-    y = y + 1
-    self:drawProgressBar(2, y, self.width - 4, energyPercent, energyColor, false)
-    y = y + 2
+    if energyPercent < 25 then
+        self:writePadded(2, y, "Energy: " .. energyPercent .. "% LOW!", lineWidth, colors.red)
+        y = y + 1
+        self:drawProgressBar(2, y, self.width - 4, energyPercent, energyColor, false)
+        y = y + 2
+    end
     
-    -- Items count and storage capacity
+    -- Items count and storage info
     local items, totalItems = self:getItemData()
-    local itemTypes, capacity, storagePercent = self:getStorageData()
+    local itemTypes = #items
     self:writePadded(2, y, "Items: " .. Utils.formatNumber(totalItems), lineWidth, colors.cyan)
     y = y + 1
-    self:writePadded(2, y, "Types: " .. itemTypes .. "/" .. capacity .. " (" .. storagePercent .. "%)", lineWidth, colors.white)
+    self:writePadded(2, y, "Types: " .. itemTypes, lineWidth, colors.white)
     y = y + 2
     
     -- Dynamic sections based on what's active
@@ -717,15 +697,23 @@ function Monitor:drawSmallLayoutDynamic()
     -- Stock Keeper (if has items)
     if hasStock then
         local status = self.stockKeeper:getStatus()
-        local lowStock = self.stockKeeper:getLowStock()
-        self:writePadded(2, y, "Stock: " .. status.satisfied .. "/" .. status.total, lineWidth, colors.orange)
+        local allItems = self.stockKeeper:getItems()
+        self:writePadded(2, y, "=== Stock Keeper ===", lineWidth, colors.orange)
         y = y + 1
+        self:writePadded(2, y, "OK:" .. status.satisfied .. " Low:" .. status.low .. " Crit:" .. status.critical, lineWidth, colors.white)
+        y = y + 2
         
-        local maxShow = math.min(2, #lowStock, self.height - y - 2)
+        local lowStock = self.stockKeeper:getLowStock()
+        local maxShow = math.min(4, #lowStock, self.height - y - 2)
         for i = 1, maxShow do
             local item = lowStock[i]
             if item then
-                self:writePadded(2, y, "! " .. Utils.truncate(item.displayName or item.name or "?", lineWidth - 2), lineWidth, colors.red)
+                local current = self.bridge:getItemAmount(item.name) or 0
+                local target = item.amount or 0
+                local name = Utils.truncate(item.displayName or item.name or "?", lineWidth - 12)
+                local statusChar = current >= target and "+" or (current >= target * 0.5 and "~" or "!")
+                local statusColor = current >= target and colors.green or (current >= target * 0.5 and colors.orange or colors.red)
+                self:writePadded(2, y, statusChar .. " " .. name .. " " .. current .. "/" .. target, lineWidth, statusColor)
                 y = y + 1
             end
         end
@@ -767,22 +755,23 @@ function Monitor:drawMediumLayoutDynamic()
     -- === LEFT COLUMN ===
     local y = 3
     
-    -- Energy
+    -- Energy (only show if low)
     local energy, maxEnergy, energyPercent = self:getEnergyData()
     local energyColor = self:getEnergyColor(energyPercent)
-    self:writePadded(2, y, "Energy:", colWidth, colors.yellow)
-    y = y + 1
-    self:drawProgressBar(2, y, halfW - 4, energyPercent, energyColor, true)
-    y = y + 2
+    
+    if energyPercent < 25 then
+        self:writePadded(2, y, "Energy: " .. energyPercent .. "% LOW!", colWidth, colors.red)
+        y = y + 1
+        self:drawProgressBar(2, y, halfW - 4, energyPercent, energyColor, true)
+        y = y + 2
+    end
     
     -- Storage
     local items, totalItems = self:getItemData()
-    local itemTypes, capacity, storagePercent = self:getStorageData()
+    local itemTypes = #items
     self:writePadded(2, y, "Items: " .. Utils.formatNumber(totalItems), colWidth, colors.cyan)
     y = y + 1
-    self:writePadded(2, y, "Types: " .. itemTypes .. "/" .. capacity, colWidth, colors.white)
-    y = y + 1
-    self:writePadded(2, y, "Storage: " .. storagePercent .. "%", colWidth, storagePercent > 75 and colors.orange or colors.green)
+    self:writePadded(2, y, "Types: " .. itemTypes, colWidth, colors.white)
     y = y + 2
     
     -- Crafting (if active)
@@ -879,20 +868,22 @@ function Monitor:drawLargeLayoutDynamic()
     self:writePadded(2, y, "=== System ===", colWidth, colors.yellow)
     y = y + 1
     
+    -- Energy (only show if low)
     local energy, maxEnergy, energyPercent = self:getEnergyData()
     local energyColor = self:getEnergyColor(energyPercent)
-    self:writePadded(2, y, "Energy:", colWidth, colors.white)
-    y = y + 1
-    self:drawProgressBar(2, y, colWidth - 2, energyPercent, energyColor, true)
-    y = y + 2
+    
+    if energyPercent < 25 then
+        self:writePadded(2, y, "Energy: " .. energyPercent .. "% LOW!", colWidth, colors.red)
+        y = y + 1
+        self:drawProgressBar(2, y, colWidth - 2, energyPercent, energyColor, true)
+        y = y + 2
+    end
     
     local items, totalItems = self:getItemData()
-    local itemTypes, capacity, storagePercent = self:getStorageData()
+    local itemTypes = #items
     self:writePadded(2, y, "Items: " .. Utils.formatNumber(totalItems), colWidth, colors.cyan)
     y = y + 1
-    self:writePadded(2, y, "Types: " .. itemTypes .. "/" .. capacity, colWidth, colors.white)
-    y = y + 1
-    self:writePadded(2, y, "Capacity: " .. storagePercent .. "%", colWidth, storagePercent > 75 and colors.orange or colors.green)
+    self:writePadded(2, y, "Types: " .. itemTypes, colWidth, colors.white)
     y = y + 2
     
     -- Fluids
