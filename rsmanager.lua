@@ -198,7 +198,7 @@ local function showDashboard()
         local totalItems = 0
         local uniqueItems = #items
         for _, item in ipairs(items) do
-            totalItems = totalItems + item.amount
+            totalItems = totalItems + (item.amount or item.count or 0)
         end
         
         local craftingJobs = bridge:getCraftingTasks() or {}
@@ -319,7 +319,7 @@ local function showItemSearch()
                 term.write(Utils.truncate(item.displayName or item.name, 30))
                 term.setCursorPos(35, y)
                 term.setTextColor(colors.white)
-                term.write(Utils.formatNumber(item.amount))
+                term.write(Utils.formatNumber(item.amount or item.count or 0))
                 y = y + 1
             end
             
@@ -885,7 +885,7 @@ local function showSystemStats()
         local items = bridge:listItems()
         local totalItems = 0
         for _, item in ipairs(items) do
-            totalItems = totalItems + item.amount
+            totalItems = totalItems + (item.amount or item.count or 0)
         end
         
         term.setCursorPos(2, y)
