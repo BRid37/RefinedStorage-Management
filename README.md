@@ -55,11 +55,10 @@ A comprehensive Refined Storage management program for CC:Tweaked computers with
 
 ### Method 1: Pastebin (Recommended)
 
-1. Upload `install.lua` to Pastebin
-2. On your CC:Tweaked computer, run:
-   ```
-   pastebin run <PASTE_CODE>
-   ```
+On your CC:Tweaked computer, run:
+```
+pastebin run S9vrZ1d0
+```
 
 ### Method 2: GitHub Direct
 

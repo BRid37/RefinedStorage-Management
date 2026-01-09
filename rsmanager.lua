@@ -594,6 +594,11 @@ local function showStockKeeper()
             stockKeeper:removeItem(items[selected].name)
             items = stockKeeper:getItems()
             selected = math.min(selected, #items)
+            -- Refresh monitor immediately to remove deleted item from display
+            if monitor and monitor:hasMonitor() and config.useMonitor then
+                monitor.needsFullRedraw = true
+                monitor:update()
+            end
         elseif key == keys.c and #items > 0 then
             -- Craft selected item now
             local item = items[selected]

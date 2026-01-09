@@ -51,6 +51,7 @@ function RSBridge.new()
     self.bridge = nil
     self.connected = false
     self.methods = {}
+    self.unavailableMethods = {}  -- Track methods that failed - skip until reboot
     self.cache = {
         items = nil,
         itemsTime = 0,
@@ -75,6 +76,7 @@ function RSBridge.new()
     }
     self.callCount = 0   -- Track API calls for debugging
     self.craftableIndex = {}  -- Quick lookup: name -> true for craftable items
+    self.pendingCrafts = {}   -- Track items we've requested crafting for: name -> requestTime
     
     -- Dynamic field detection - remembers which field names work
     self.fieldMap = {
@@ -197,6 +199,11 @@ function RSBridge:call(methodName, ...)
         return nil, "Not connected"
     end
     
+    -- Skip methods that have been marked as unavailable
+    if self.unavailableMethods[methodName] then
+        return nil, "Method unavailable"
+    end
+    
     -- Rate limit API calls
     rateLimit()
     self.callCount = self.callCount + 1
@@ -207,9 +214,86 @@ function RSBridge:call(methodName, ...)
     
     if not ok then
         log("Error calling " .. methodName .. ": " .. tostring(result))
+        -- Check if this is a "method doesn't exist" type error
+        local errStr = tostring(result):lower()
+        if errStr:find("no such method") or errStr:find("attempt to call nil") or 
+           errStr:find("not a function") or errStr:find("does not exist") then
+            -- Mark method as unavailable until reboot
+            self.unavailableMethods[methodName] = true
+            log("Marking method as unavailable until reboot: " .. methodName)
+        end
         return nil, result
     end
     return result
+end
+
+-- Check if a method is available (not marked as failed)
+function RSBridge:isMethodAvailable(methodName)
+    return not self.unavailableMethods[methodName]
+end
+
+-- Get list of unavailable methods (for debugging)
+function RSBridge:getUnavailableMethods()
+    local list = {}
+    for method, _ in pairs(self.unavailableMethods) do
+        table.insert(list, method)
+    end
+    return list
+end
+
+-- Track that we've requested a craft for an item
+function RSBridge:markCraftPending(name, amount, targetAmount)
+    self.pendingCrafts[name] = {
+        amount = amount,
+        targetAmount = targetAmount,  -- Store target so we can check if fulfilled
+        time = os.epoch("utc") / 1000
+    }
+end
+
+-- Check if we have a pending craft request for an item
+-- Only times out if the craft is no longer active and item count hasn't increased
+function RSBridge:hasPendingCraft(name, timeoutSeconds)
+    timeoutSeconds = timeoutSeconds or 120  -- Default 2 minute timeout
+    local pending = self.pendingCrafts[name]
+    if not pending then return false end
+    
+    local now = os.epoch("utc") / 1000
+    local elapsed = now - pending.time
+    
+    -- First check if the item is still actively being crafted via API
+    local stillCrafting = self:isItemCrafting(name)
+    if stillCrafting then
+        -- Craft is still active, refresh the timestamp and keep pending
+        self.pendingCrafts[name].time = now
+        return true, pending.amount
+    end
+    
+    -- Craft not showing in active tasks - check current item count
+    -- Force refresh to get accurate count
+    self:listItems(true)
+    local currentAmount = self:getItemAmount(name) or 0
+    
+    -- If we have a target and current amount meets/exceeds it, clear pending
+    if pending.targetAmount and currentAmount >= pending.targetAmount then
+        self.pendingCrafts[name] = nil
+        return false
+    end
+    
+    -- Check if item count increased since we requested (craft may have completed)
+    -- If so, clear pending so stock keeper can re-evaluate
+    if elapsed > timeoutSeconds then
+        -- Timed out and not crafting, clear it so we can re-check
+        self.pendingCrafts[name] = nil
+        return false
+    end
+    
+    -- Still within timeout window, keep pending to prevent duplicate requests
+    return true, pending.amount
+end
+
+-- Clear pending craft when item is stocked
+function RSBridge:clearPendingCraft(name)
+    self.pendingCrafts[name] = nil
 end
 
 -- Get API call statistics

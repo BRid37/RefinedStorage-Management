@@ -231,13 +231,24 @@ function StockKeeper:getItem(name)
     return nil
 end
 
-function StockKeeper:getLowStock()
+function StockKeeper:getLowStock(forceRefresh)
     local lowStock = {}
+    
+    -- Force refresh item cache if requested (important for accurate counts)
+    if forceRefresh then
+        self.bridge:listItems(true)
+    end
     
     for _, item in ipairs(self.items or {}) do
         if item and item.enabled ~= false and item.name and item.amount then
             local current = self.bridge:getItemAmount(item.name) or 0
             local target = item.amount or 1
+            
+            -- Clear pending craft if item is now stocked
+            if current >= target then
+                self.bridge:clearPendingCraft(item.name)
+            end
+            
             if current < target then
                 table.insert(lowStock, {
                     name = item.name,
@@ -281,7 +292,8 @@ function StockKeeper:check()
     -- Periodically validate patterns
     self:validatePatterns()
     
-    local lowStock = self:getLowStock()
+    -- Force refresh item list for accurate counts during stock check
+    local lowStock = self:getLowStock(true)
     local craftedAny = false
     
     for _, item in ipairs(lowStock) do
@@ -290,12 +302,22 @@ function StockKeeper:check()
             goto continue
         end
         
-        -- Check if already crafting
+        -- Check if we already have a pending craft request for this item
+        -- This prevents duplicate craft requests when API calls fail
+        local hasPending, pendingAmount = self.bridge:hasPendingCraft(item.name, 120)  -- 2 minute timeout
+        if hasPending then
+            -- We already requested a craft, skip until timeout expires
+            self:updateItemCraftStatus(item.name, StockKeeper.STATUS_CRAFTING)
+            goto continue
+        end
+        
+        -- Check if already crafting (via API)
         local isCrafting = self.bridge:isItemCrafting(item.name)
         
         if isCrafting then
-            -- Update status
+            -- Update status and mark as pending to prevent duplicate requests
             self:updateItemCraftStatus(item.name, StockKeeper.STATUS_CRAFTING)
+            self.bridge:markCraftPending(item.name, item.needed, item.target)
         else
             -- Try to craft
             local success, reason = self.bridge:craftItem(item.name, item.needed)
@@ -306,6 +328,8 @@ function StockKeeper:check()
                     requestTime = os.epoch("utc")
                 }
                 self:updateItemCraftStatus(item.name, StockKeeper.STATUS_CRAFTING)
+                -- Mark as pending to prevent duplicate requests
+                self.bridge:markCraftPending(item.name, item.needed, item.target)
                 craftedAny = true
             else
                 -- Track the failure reason
