@@ -163,12 +163,20 @@ function RSBridge:getTaskAmountField(task)
 end
 
 function RSBridge:connect()
-    self.bridge = peripheral.find("rs_bridge")
-    if self.bridge then
+    local ok, result = pcall(function()
+        return peripheral.find("rs_bridge")
+    end)
+    
+    if ok and result then
+        self.bridge = result
         self.connected = true
         -- Discover available methods
         self:discoverMethods()
         return true
+    end
+    
+    if not ok then
+        log("Error finding RS Bridge: " .. tostring(result))
     end
     return false
 end
@@ -176,8 +184,19 @@ end
 function RSBridge:discoverMethods()
     if not self.bridge then return end
     
-    local name = peripheral.getName(self.bridge)
-    self.methods = peripheral.getMethods(name)
+    local ok, name = pcall(peripheral.getName, self.bridge)
+    if not ok then
+        log("Error getting peripheral name: " .. tostring(name))
+        return
+    end
+    
+    local ok2, methods = pcall(peripheral.getMethods, name)
+    if not ok2 then
+        log("Error getting peripheral methods: " .. tostring(methods))
+        return
+    end
+    
+    self.methods = methods
     
     -- Log discovered methods
     log("=== RS Bridge Methods Discovered ===")
