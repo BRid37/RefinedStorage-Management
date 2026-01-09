@@ -213,11 +213,18 @@ function RSBridge:call(methodName, ...)
     end, ...)
     
     if not ok then
-        log("Error calling " .. methodName .. ": " .. tostring(result))
+        local errMsg = tostring(result)
+        log("Error calling " .. methodName .. ": " .. errMsg)
         -- Check if this is a "method doesn't exist" type error
-        local errStr = tostring(result):lower()
-        if errStr:find("no such method") or errStr:find("attempt to call nil") or 
-           errStr:find("not a function") or errStr:find("does not exist") then
+        local errStr = errMsg:lower()
+        -- Broader patterns to catch various error formats
+        if errStr:find("no such method") or 
+           errStr:find("attempt to call") or 
+           errStr:find("not a function") or 
+           errStr:find("does not exist") or
+           errStr:find("attempt to index") or
+           errStr:find("nil value") or
+           errStr:find("bad argument") then
             -- Mark method as unavailable until reboot
             self.unavailableMethods[methodName] = true
             log("Marking method as unavailable until reboot: " .. methodName)
@@ -323,9 +330,12 @@ function RSBridge:getEnergyStorage()
         return self.cache.energy
     end
     
-    -- Try different method names
-    local result = self:call("getEnergyStorage")
-    if not result then
+    -- Try different method names, checking availability first
+    local result = nil
+    if self:isMethodAvailable("getEnergyStorage") then
+        result = self:call("getEnergyStorage")
+    end
+    if not result and self:isMethodAvailable("getStoredEnergy") then
         result = self:call("getStoredEnergy")
     end
     
@@ -346,8 +356,11 @@ function RSBridge:getMaxEnergyStorage()
         return self.cache.maxEnergy
     end
     
-    local result = self:call("getMaxEnergyStorage")
-    if not result then
+    local result = nil
+    if self:isMethodAvailable("getMaxEnergyStorage") then
+        result = self:call("getMaxEnergyStorage")
+    end
+    if not result and self:isMethodAvailable("getEnergyCapacity") then
         result = self:call("getEnergyCapacity")
     end
     
@@ -375,9 +388,12 @@ function RSBridge:listItems(forceRefresh)
         return self.cache.items
     end
     
-    -- Try different method names for listing items
-    local result = self:call("listItems")
-    if not result then
+    -- Try different method names for listing items, checking availability first
+    local result = nil
+    if self:isMethodAvailable("listItems") then
+        result = self:call("listItems")
+    end
+    if not result and self:isMethodAvailable("getItems") then
         result = self:call("getItems")
     end
     
@@ -417,8 +433,35 @@ function RSBridge:getItemAmount(name)
     local item = self:getItem(name)
     if item then
         -- Use dynamic field detection for amount
-        return self:getItemAmountField(item)
+        local amount = self:getItemAmountField(item)
+        -- Debug logging for discrepancies
+        if amount < 100 then  -- Only log if surprisingly low
+            log("getItemAmount(" .. name .. ") = " .. amount .. " | raw item: " .. textutils.serialise(item))
+        end
+        return amount
     end
+    
+    -- Also check if there are multiple stacks with different NBT
+    local items = self:listItems()
+    local totalAmount = 0
+    local matchCount = 0
+    for _, itm in ipairs(items) do
+        -- Check if name matches (case-insensitive and partial match)
+        local itmName = self:getItemNameField(itm)
+        if itmName and itmName:find(name, 1, true) then
+            local amt = self:getItemAmountField(itm)
+            totalAmount = totalAmount + amt
+            matchCount = matchCount + 1
+            if matchCount <= 3 then  -- Log first 3 matches
+                log("  Partial match: " .. itmName .. " = " .. amt)
+            end
+        end
+    end
+    
+    if matchCount > 1 then
+        log("Found " .. matchCount .. " partial matches for '" .. name .. "', total: " .. totalAmount)
+    end
+    
     return 0
 end
 
@@ -462,9 +505,12 @@ function RSBridge:listFluids(forceRefresh)
         return self.cache.fluids
     end
     
-    -- Try different method names
-    local result = self:call("listFluids")
-    if not result then
+    -- Try different method names, checking availability first
+    local result = nil
+    if self:isMethodAvailable("listFluids") then
+        result = self:call("listFluids")
+    end
+    if not result and self:isMethodAvailable("getFluids") then
         result = self:call("getFluids")
     end
     
@@ -507,9 +553,12 @@ function RSBridge:listCraftableItems(forceRefresh)
     
     log("Refreshing craftable items list...")
     
-    -- Try different method names
-    local result = self:call("listCraftableItems")
-    if not result then
+    -- Try different method names, checking availability first
+    local result = nil
+    if self:isMethodAvailable("listCraftableItems") then
+        result = self:call("listCraftableItems")
+    end
+    if not result and self:isMethodAvailable("getCraftableItems") then
         result = self:call("getCraftableItems")
     end
     
@@ -668,12 +717,15 @@ function RSBridge:getCraftingTasks()
         return self.cache.tasks
     end
     
-    -- Try different method names
-    local result = self:call("craftingTasks")
-    if not result then
+    -- Try different method names, checking availability first
+    local result = nil
+    if self:isMethodAvailable("craftingTasks") then
+        result = self:call("craftingTasks")
+    end
+    if not result and self:isMethodAvailable("getCraftingTasks") then
         result = self:call("getCraftingTasks")
     end
-    if not result then
+    if not result and self:isMethodAvailable("listCraftingTasks") then
         result = self:call("listCraftingTasks")
     end
     
