@@ -476,7 +476,7 @@ local function showStockKeeper()
     local items = stockKeeper:getItems()
     local selected = 1
     local scroll = 0
-    local maxDisplay = 10
+    local maxDisplay = 5  -- Reduced because we show 2 lines per item (name + ID)
     
     while true do
         GUI.clear()
@@ -538,6 +538,10 @@ local function showStockKeeper()
             
             term.setTextColor(colors.white)
             term.write(" " .. Utils.truncate(item.displayName or item.name or "Unknown", 22))
+            -- Show item ID on next line for debugging
+            term.setCursorPos(4, y + 1)
+            term.setTextColor(colors.gray)
+            term.write(Utils.truncate(item.name or "?", 30))
             term.setCursorPos(28, y)
             term.setTextColor(colors.cyan)
             term.write(Utils.formatNumber(current) .. "/" .. Utils.formatNumber(target))
@@ -552,7 +556,7 @@ local function showStockKeeper()
             end
             
             term.setBackgroundColor(colors.black)
-            y = y + 1
+            y = y + 2  -- Increment by 2 since we show 2 lines per item
         end
         
         term.setCursorPos(2, 17)
