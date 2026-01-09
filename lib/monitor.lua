@@ -63,10 +63,18 @@ function Monitor:setMonitoredItems(items)
 end
 
 function Monitor:findMonitor()
-    self.monitor = peripheral.find("monitor")
-    if self.monitor then
+    local ok, result = pcall(function()
+        return peripheral.find("monitor")
+    end)
+    
+    if ok and result then
+        self.monitor = result
         self:autoScale()
         return true
+    end
+    
+    if not ok then
+        print("Error finding monitor: " .. tostring(result))
     end
     return false
 end
@@ -75,8 +83,15 @@ function Monitor:autoScale()
     if not self.monitor then return end
     
     -- Get monitor dimensions at smallest scale to determine optimal scaling
-    self.monitor.setTextScale(0.5)
-    local baseW, baseH = self.monitor.getSize()
+    local ok = pcall(function()
+        self.monitor.setTextScale(0.5)
+    end)
+    if not ok then return end
+    
+    local ok2, baseW, baseH = pcall(function()
+        return self.monitor.getSize()
+    end)
+    if not ok2 then return end
     
     -- Calculate how much content we need to show
     local hasStock = self.stockKeeper and self.stockKeeper:getActiveCount() > 0
@@ -89,8 +104,15 @@ function Monitor:autoScale()
     local scales = {2, 1.5, 1, 0.5}
     
     for _, scale in ipairs(scales) do
-        self.monitor.setTextScale(scale)
-        local w, h = self.monitor.getSize()
+        local ok = pcall(function()
+            self.monitor.setTextScale(scale)
+        end)
+        if not ok then break end
+        
+        local ok2, w, h = pcall(function()
+            return self.monitor.getSize()
+        end)
+        if not ok2 then break end
         
         -- Check if this scale provides enough space for content
         -- Need at least 18 wide and 12 tall for basic display
@@ -116,10 +138,13 @@ function Monitor:autoScale()
     end
     
     -- Fallback to smallest scale
-    self.monitor.setTextScale(0.5)
-    self.width, self.height = self.monitor.getSize()
-    self.tooSmall = self.width < self.MIN_WIDTH or self.height < self.MIN_HEIGHT
-    self:determineLayout()
+    pcall(function()
+        self.monitor.setTextScale(0.5)
+        local w, h = self.monitor.getSize()
+        self.width, self.height = w, h
+        self.tooSmall = self.width < self.MIN_WIDTH or self.height < self.MIN_HEIGHT
+        self:determineLayout()
+    end)
 end
 
 function Monitor:determineLayout()
@@ -139,104 +164,120 @@ end
 function Monitor:setScale(scale)
     if self.monitor then
         self.scale = scale
-        self.monitor.setTextScale(scale)
-        self.width, self.height = self.monitor.getSize()
-        self:determineLayout()
+        pcall(function()
+            self.monitor.setTextScale(scale)
+            local w, h = self.monitor.getSize()
+            self.width, self.height = w, h
+            self:determineLayout()
+        end)
     end
 end
 
 function Monitor:clear()
     if not self.monitor then return end
-    self.monitor.setBackgroundColor(colors.black)
-    self.monitor.clear()
-    self.monitor.setCursorPos(1, 1)
+    pcall(function()
+        self.monitor.setBackgroundColor(colors.black)
+        self.monitor.clear()
+        self.monitor.setCursorPos(1, 1)
+    end)
 end
 
 function Monitor:setColors(fg, bg)
     if not self.monitor then return end
-    if fg then self.monitor.setTextColor(fg) end
-    if bg then self.monitor.setBackgroundColor(bg) end
+    pcall(function()
+        if fg then self.monitor.setTextColor(fg) end
+        if bg then self.monitor.setBackgroundColor(bg) end
+    end)
 end
 
 function Monitor:write(x, y, text, fg, bg)
     if not self.monitor then return end
     if x < 1 or y < 1 or x > self.width or y > self.height then return end
-    self.monitor.setCursorPos(x, y)
-    if fg then self.monitor.setTextColor(fg) end
-    if bg then self.monitor.setBackgroundColor(bg) end
-    self.monitor.write(text)
+    pcall(function()
+        self.monitor.setCursorPos(x, y)
+        if fg then self.monitor.setTextColor(fg) end
+        if bg then self.monitor.setBackgroundColor(bg) end
+        self.monitor.write(text)
+    end)
 end
 
 function Monitor:fillLine(y, color)
     if not self.monitor then return end
-    self.monitor.setCursorPos(1, y)
-    self.monitor.setBackgroundColor(color or colors.black)
-    self.monitor.write(string.rep(" ", self.width))
+    pcall(function()
+        self.monitor.setCursorPos(1, y)
+        self.monitor.setBackgroundColor(color or colors.black)
+        self.monitor.write(string.rep(" ", self.width))
+    end)
 end
 
 function Monitor:drawProgressBar(x, y, width, percent, color, showPercent)
     if not self.monitor then return end
     
-    percent = math.max(0, math.min(100, percent))
-    local filled = math.floor((width * percent) / 100)
-    
-    self.monitor.setCursorPos(x, y)
-    self.monitor.setBackgroundColor(color or colors.green)
-    self.monitor.write(string.rep(" ", filled))
-    self.monitor.setBackgroundColor(colors.gray)
-    self.monitor.write(string.rep(" ", width - filled))
-    self.monitor.setBackgroundColor(colors.black)
-    
-    if showPercent then
-        local pctText = tostring(percent) .. "%"
-        local pctX = x + math.floor((width - #pctText) / 2)
-        self.monitor.setCursorPos(pctX, y)
-        self.monitor.setTextColor(colors.white)
-        self.monitor.setBackgroundColor(percent > 50 and color or colors.gray)
-        self.monitor.write(pctText)
+    pcall(function()
+        percent = math.max(0, math.min(100, percent))
+        local filled = math.floor((width * percent) / 100)
+        
+        self.monitor.setCursorPos(x, y)
+        self.monitor.setBackgroundColor(color or colors.green)
+        self.monitor.write(string.rep(" ", filled))
+        self.monitor.setBackgroundColor(colors.gray)
+        self.monitor.write(string.rep(" ", width - filled))
         self.monitor.setBackgroundColor(colors.black)
-    end
+        
+        if showPercent then
+            local pctText = tostring(percent) .. "%"
+            local pctX = x + math.floor((width - #pctText) / 2)
+            self.monitor.setCursorPos(pctX, y)
+            self.monitor.setTextColor(colors.white)
+            self.monitor.setBackgroundColor(percent > 50 and color or colors.gray)
+            self.monitor.write(pctText)
+            self.monitor.setBackgroundColor(colors.black)
+        end
+    end)
 end
 
 function Monitor:drawBox(x, y, w, h, title, borderColor, fillColor)
     if not self.monitor then return end
-    borderColor = borderColor or colors.gray
-    fillColor = fillColor or colors.black
     
-    -- Fill background
-    self.monitor.setBackgroundColor(fillColor)
-    for i = y, y + h - 1 do
-        self.monitor.setCursorPos(x, i)
-        self.monitor.write(string.rep(" ", w))
-    end
-    
-    -- Draw border
-    self.monitor.setTextColor(borderColor)
-    self.monitor.setBackgroundColor(fillColor)
-    
-    -- Top and bottom
-    self.monitor.setCursorPos(x, y)
-    self.monitor.write("+" .. string.rep("-", w - 2) .. "+")
-    self.monitor.setCursorPos(x, y + h - 1)
-    self.monitor.write("+" .. string.rep("-", w - 2) .. "+")
-    
-    -- Sides
-    for i = y + 1, y + h - 2 do
-        self.monitor.setCursorPos(x, i)
-        self.monitor.write("|")
-        self.monitor.setCursorPos(x + w - 1, i)
-        self.monitor.write("|")
-    end
-    
-    -- Title
-    if title then
-        local titleX = x + math.floor((w - #title - 2) / 2)
-        self.monitor.setCursorPos(titleX, y)
-        self.monitor.setTextColor(colors.white)
-        self.monitor.write(" " .. title .. " ")
-    end
-    
-    self.monitor.setBackgroundColor(colors.black)
+    pcall(function()
+        borderColor = borderColor or colors.gray
+        fillColor = fillColor or colors.black
+        
+        -- Fill background
+        self.monitor.setBackgroundColor(fillColor)
+        for i = y, y + h - 1 do
+            self.monitor.setCursorPos(x, i)
+            self.monitor.write(string.rep(" ", w))
+        end
+        
+        -- Draw border
+        self.monitor.setTextColor(borderColor)
+        self.monitor.setBackgroundColor(fillColor)
+        
+        -- Top and bottom
+        self.monitor.setCursorPos(x, y)
+        self.monitor.write("+" .. string.rep("-", w - 2) .. "+")
+        self.monitor.setCursorPos(x, y + h - 1)
+        self.monitor.write("+" .. string.rep("-", w - 2) .. "+")
+        
+        -- Sides
+        for i = y + 1, y + h - 2 do
+            self.monitor.setCursorPos(x, i)
+            self.monitor.write("|")
+            self.monitor.setCursorPos(x + w - 1, i)
+            self.monitor.write("|")
+        end
+        
+        -- Title
+        if title then
+            local titleX = x + math.floor((w - #title - 2) / 2)
+            self.monitor.setCursorPos(titleX, y)
+            self.monitor.setTextColor(colors.white)
+            self.monitor.write(" " .. title .. " ")
+        end
+        
+        self.monitor.setBackgroundColor(colors.black)
+    end)
 end
 
 function Monitor:drawHeader()
@@ -252,14 +293,20 @@ function Monitor:drawHeader()
     local titleX = math.floor((self.width - #title) / 2) + 1
     self:write(titleX, 1, title, colors.white, colors.blue)
     
-    self.monitor.setBackgroundColor(colors.black)
+    pcall(function()
+        self.monitor.setBackgroundColor(colors.black)
+    end)
 end
 
 function Monitor:update()
     if not self.monitor then return end
     
     -- Refresh size in case monitor changed
-    local newW, newH = self.monitor.getSize()
+    local ok, newW, newH = pcall(function()
+        return self.monitor.getSize()
+    end)
+    if not ok then return end
+    
     local sizeChanged = (newW ~= self.width or newH ~= self.height)
     self.width, self.height = newW, newH
     self:determineLayout()
@@ -300,20 +347,24 @@ function Monitor:writePadded(x, y, text, minWidth, fg, bg)
     if not self.monitor then return end
     if x < 1 or y < 1 or x > self.width or y > self.height then return end
     
-    self.monitor.setCursorPos(x, y)
-    if fg then self.monitor.setTextColor(fg) end
-    if bg then self.monitor.setBackgroundColor(bg) else self.monitor.setBackgroundColor(colors.black) end
-    
-    local padded = text .. string.rep(" ", math.max(0, minWidth - #text))
-    self.monitor.write(padded)
+    pcall(function()
+        self.monitor.setCursorPos(x, y)
+        if fg then self.monitor.setTextColor(fg) end
+        if bg then self.monitor.setBackgroundColor(bg) else self.monitor.setBackgroundColor(colors.black) end
+        
+        local padded = text .. string.rep(" ", math.max(0, minWidth - #text))
+        self.monitor.write(padded)
+    end)
 end
 
 -- Clear a specific line
 function Monitor:clearLine(y)
     if not self.monitor then return end
-    self.monitor.setCursorPos(1, y)
-    self.monitor.setBackgroundColor(colors.black)
-    self.monitor.write(string.rep(" ", self.width))
+    pcall(function()
+        self.monitor.setCursorPos(1, y)
+        self.monitor.setBackgroundColor(colors.black)
+        self.monitor.write(string.rep(" ", self.width))
+    end)
 end
 
 function Monitor:drawTooSmallMessage()
@@ -601,20 +652,22 @@ end
 function Monitor:showAlert(message, color)
     if not self.monitor then return end
     
-    local oldBg = self.monitor.getBackgroundColor()
-    
-    self.monitor.setBackgroundColor(color or colors.red)
-    self.monitor.setTextColor(colors.white)
-    
-    local y = math.floor(self.height / 2)
-    self.monitor.setCursorPos(1, y)
-    self.monitor.clearLine()
-    
-    local x = math.floor((self.width - #message) / 2) + 1
-    self.monitor.setCursorPos(x, y)
-    self.monitor.write(message)
-    
-    self.monitor.setBackgroundColor(oldBg)
+    pcall(function()
+        local oldBg = self.monitor.getBackgroundColor()
+        
+        self.monitor.setBackgroundColor(color or colors.red)
+        self.monitor.setTextColor(colors.white)
+        
+        local y = math.floor(self.height / 2)
+        self.monitor.setCursorPos(1, y)
+        self.monitor.clearLine()
+        
+        local x = math.floor((self.width - #message) / 2) + 1
+        self.monitor.setCursorPos(x, y)
+        self.monitor.write(message)
+        
+        self.monitor.setBackgroundColor(oldBg)
+    end)
 end
 
 function Monitor:drawItemList(items, startY, maxItems)

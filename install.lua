@@ -52,11 +52,19 @@ local function writeFile(path, content)
 end
 
 local function downloadFile(url, path)
-    local response = http.get(url)
-    if response then
-        local content = response.readAll()
-        response.close()
-        return writeFile(path, content)
+    local ok, response = pcall(function()
+        return http.get(url)
+    end)
+    
+    if ok and response then
+        local ok2, content = pcall(function()
+            return response.readAll()
+        end)
+        pcall(function() response.close() end)
+        
+        if ok2 and content then
+            return writeFile(path, content)
+        end
     end
     return false
 end

@@ -62,11 +62,19 @@ local function getBaseUrl()
 end
 
 local function httpGet(url)
-    local response = http.get(url)
-    if response then
-        local content = response.readAll()
-        response.close()
-        return content
+    local ok, response = pcall(function()
+        return http.get(url)
+    end)
+    
+    if ok and response then
+        local ok2, content = pcall(function()
+            return response.readAll()
+        end)
+        pcall(function() response.close() end)
+        
+        if ok2 then
+            return content
+        end
     end
     return nil
 end
@@ -88,17 +96,24 @@ end
 function Updater:getRemoteCommit()
     -- Use GitHub API to get latest commit hash
     local url = GITHUB_API .. Updater.GITHUB_USER .. "/" .. Updater.GITHUB_REPO .. "/commits/" .. Updater.GITHUB_BRANCH
-    local response = http.get(url, {["User-Agent"] = "CC-Tweaked"})
     
-    if response then
-        local content = response.readAll()
-        response.close()
+    local ok, response = pcall(function()
+        return http.get(url, {["User-Agent"] = "CC-Tweaked"})
+    end)
+    
+    if ok and response then
+        local ok2, content = pcall(function()
+            return response.readAll()
+        end)
+        pcall(function() response.close() end)
         
-        -- Parse JSON to get sha (simple pattern match)
-        local sha = content:match('"sha"%s*:%s*"([a-f0-9]+)"')
-        if sha then
-            self.remoteCommit = sha:sub(1, 7)  -- Use short hash
-            return self.remoteCommit
+        if ok2 and content then
+            -- Parse JSON to get sha (simple pattern match)
+            local sha = content:match('"sha"%s*:%s*"([a-f0-9]+)"')
+            if sha then
+                self.remoteCommit = sha:sub(1, 7)  -- Use short hash
+                return self.remoteCommit
+            end
         end
     end
     return nil
