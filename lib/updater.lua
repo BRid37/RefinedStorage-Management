@@ -5,7 +5,7 @@ local Updater = {}
 Updater.__index = Updater
 
 -- Version info (for display only)
-Updater.VERSION = "1.3.15"
+Updater.VERSION = "1.5.0"
 Updater.GITHUB_USER = "BRid37"
 Updater.GITHUB_REPO = "RefinedStorage-Management"
 Updater.GITHUB_BRANCH = "main"
@@ -24,6 +24,8 @@ local files = {
     "lib/gui.lua",
     "lib/utils.lua",
     "lib/updater.lua",
+    "lib/storage.lua",
+    "lib/storageview.lua",
     "version.txt",
 }
 
@@ -256,6 +258,64 @@ end
 
 function Updater.getVersion()
     return Updater.VERSION
+end
+
+-- Background update check (non-blocking, just sets flag)
+function Updater:backgroundCheck()
+    if not http then
+        return false
+    end
+    
+    local hasUpdate, _ = self:checkForUpdates()
+    return hasUpdate
+end
+
+-- Safe update with graceful shutdown callback
+function Updater:safeUpdate(shutdownCallback, printFunc)
+    printFunc = printFunc or function() end
+    
+    if not self.updateAvailable then
+        local hasUpdate = self:backgroundCheck()
+        if not hasUpdate then
+            return false, "No update available"
+        end
+    end
+    
+    printFunc("Update available! Preparing safe update...")
+    
+    -- Call shutdown callback to safely stop operations
+    if shutdownCallback then
+        printFunc("Stopping operations for safe update...")
+        shutdownCallback()
+    end
+    
+    printFunc("Downloading update...")
+    local success, result = self:downloadUpdate(function(file, current, total)
+        if file ~= "complete" then
+            printFunc("  " .. file)
+        end
+    end)
+    
+    if success then
+        printFunc("Update complete! Restarting in 2 seconds...")
+        sleep(2)
+        os.reboot()
+    else
+        printFunc("Update failed: " .. result)
+        return false, result
+    end
+    
+    return true
+end
+
+-- Get update status for display
+function Updater:getUpdateStatus()
+    return {
+        updateAvailable = self.updateAvailable,
+        localCommit = self.localCommit,
+        remoteCommit = self.remoteCommit,
+        version = Updater.VERSION
+    }
 end
 
 return Updater
