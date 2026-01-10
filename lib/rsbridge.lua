@@ -10,9 +10,16 @@ local LOG_FILE = "/rsmanager/logs/rsbridge.log"
 local MAX_LOG_SIZE = 50000  -- ~50KB max log size
 local LOG_ENABLED = true
 
+-- State persistence for crash recovery
+local STATE_FILE = "/rsmanager/data/bridge_state.dat"
+
 -- Rate limiting
 local MIN_CALL_INTERVAL = 0.1  -- Minimum seconds between API calls
 local lastCallTime = 0
+
+-- API call protection
+local inApiCall = false  -- Track if we're currently in an API call
+local shuttingDown = false  -- Flag for graceful shutdown
 
 local function log(message)
     if not LOG_ENABLED then return end
@@ -44,6 +51,45 @@ local function rateLimit()
         sleep(MIN_CALL_INTERVAL - elapsed)
     end
     lastCallTime = os.epoch("utc") / 1000
+end
+
+-- Save state for crash recovery
+local function saveState(state)
+    local dir = fs.getDir(STATE_FILE)
+    if not fs.exists(dir) then
+        fs.makeDir(dir)
+    end
+    local file = fs.open(STATE_FILE, "w")
+    if file then
+        file.write(textutils.serialise(state))
+        file.close()
+        return true
+    end
+    return false
+end
+
+-- Load state after crash/restart
+local function loadState()
+    if not fs.exists(STATE_FILE) then
+        return nil
+    end
+    local file = fs.open(STATE_FILE, "r")
+    if file then
+        local content = file.readAll()
+        file.close()
+        local ok, state = pcall(textutils.unserialise, content)
+        if ok and state then
+            return state
+        end
+    end
+    return nil
+end
+
+-- Clear state file (call after successful operations)
+local function clearState()
+    if fs.exists(STATE_FILE) then
+        fs.delete(STATE_FILE)
+    end
 end
 
 function RSBridge.new()
@@ -286,6 +332,12 @@ function RSBridge:call(methodName, ...)
         return nil, "Not connected"
     end
     
+    -- Don't start new API calls during shutdown
+    if shuttingDown then
+        log("Skipping API call during shutdown: " .. methodName)
+        return nil, "Shutting down"
+    end
+    
     -- Skip methods that have been marked as unavailable
     if self.unavailableMethods[methodName] then
         return nil, "Method unavailable"
@@ -295,9 +347,17 @@ function RSBridge:call(methodName, ...)
     rateLimit()
     self.callCount = self.callCount + 1
     
+    -- Track that we're in an API call
+    inApiCall = true
+    self.lastApiCall = methodName
+    
     local ok, result = pcall(function(...)
         return self.bridge[methodName](...)
     end, ...)
+    
+    -- API call complete
+    inApiCall = false
+    self.lastApiCall = nil
     
     if not ok then
         local errMsg = tostring(result)
@@ -321,6 +381,65 @@ function RSBridge:call(methodName, ...)
     return result
 end
 
+-- Check if currently in an API call (for shutdown logic)
+function RSBridge:isInApiCall()
+    return inApiCall
+end
+
+-- Request graceful shutdown - waits for current API call to complete
+function RSBridge:beginShutdown()
+    shuttingDown = true
+    log("Shutdown requested, waiting for API calls to complete...")
+    
+    -- Wait up to 5 seconds for current API call to finish
+    local waitTime = 0
+    while inApiCall and waitTime < 5 do
+        sleep(0.1)
+        waitTime = waitTime + 0.1
+    end
+    
+    if inApiCall then
+        log("WARNING: Shutdown with API call still in progress: " .. tostring(self.lastApiCall))
+    else
+        log("All API calls completed, safe to shutdown")
+    end
+    
+    -- Save pending crafts state for recovery
+    if self.pendingCrafts and next(self.pendingCrafts) then
+        saveState({
+            pendingCrafts = self.pendingCrafts,
+            shutdownTime = os.epoch("utc") / 1000
+        })
+        log("Saved pending crafts state for recovery")
+    else
+        clearState()
+    end
+    
+    return not inApiCall
+end
+
+-- Restore state after restart (call during init)
+function RSBridge:recoverState()
+    local state = loadState()
+    if state then
+        log("Found saved state from previous session")
+        if state.pendingCrafts then
+            -- Restore pending crafts but mark them as potentially stale
+            for name, craft in pairs(state.pendingCrafts) do
+                craft.recovered = true
+                craft.originalTime = craft.time
+                craft.time = os.epoch("utc") / 1000  -- Reset timer
+                self.pendingCrafts[name] = craft
+                log("Recovered pending craft: " .. name)
+            end
+        end
+        -- Clear the state file after recovery
+        clearState()
+        return true
+    end
+    return false
+end
+
 -- Check if a method is available (not marked as failed)
 function RSBridge:isMethodAvailable(methodName)
     return not self.unavailableMethods[methodName]
@@ -336,12 +455,38 @@ function RSBridge:getUnavailableMethods()
 end
 
 -- Track that we've requested a craft for an item
+-- Saves state immediately to protect against power-off
 function RSBridge:markCraftPending(name, amount, targetAmount)
     self.pendingCrafts[name] = {
         amount = amount,
         targetAmount = targetAmount,  -- Store target so we can check if fulfilled
         time = os.epoch("utc") / 1000
     }
+    -- Save state immediately so it survives power button termination
+    self:saveCurrentState()
+end
+
+-- Save current pending crafts state to disk (call frequently during operations)
+function RSBridge:saveCurrentState()
+    if self.pendingCrafts and next(self.pendingCrafts) then
+        saveState({
+            pendingCrafts = self.pendingCrafts,
+            saveTime = os.epoch("utc") / 1000
+        })
+    end
+end
+
+-- Clear a completed craft from pending and update state file
+function RSBridge:clearPendingCraft(name)
+    if self.pendingCrafts[name] then
+        self.pendingCrafts[name] = nil
+        -- Update state file - either save remaining or clear if empty
+        if next(self.pendingCrafts) then
+            self:saveCurrentState()
+        else
+            clearState()
+        end
+    end
 end
 
 -- Check if we have a pending craft request for an item
@@ -369,7 +514,7 @@ function RSBridge:hasPendingCraft(name, timeoutSeconds)
     
     -- If we have a target and current amount meets/exceeds it, clear pending
     if pending.targetAmount and currentAmount >= pending.targetAmount then
-        self.pendingCrafts[name] = nil
+        self:clearPendingCraft(name)
         return false
     end
     
@@ -377,17 +522,12 @@ function RSBridge:hasPendingCraft(name, timeoutSeconds)
     -- If so, clear pending so stock keeper can re-evaluate
     if elapsed > timeoutSeconds then
         -- Timed out and not crafting, clear it so we can re-check
-        self.pendingCrafts[name] = nil
+        self:clearPendingCraft(name)
         return false
     end
     
     -- Still within timeout window, keep pending to prevent duplicate requests
     return true, pending.amount
-end
-
--- Clear pending craft when item is stocked
-function RSBridge:clearPendingCraft(name)
-    self.pendingCrafts[name] = nil
 end
 
 -- Get API call statistics
