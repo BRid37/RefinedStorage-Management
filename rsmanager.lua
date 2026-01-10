@@ -42,8 +42,14 @@ local Monitor = loadModule("monitor")
 local GUI = loadModule("gui")
 local Utils = loadModule("utils")
 local Updater = loadModule("updater")
-local Storage = loadModule("storage")
-local showStorageInfo = loadModule("storageview")
+
+-- Optional modules (may not exist in older versions)
+local Storage = nil
+local showStorageInfo = nil
+pcall(function()
+    Storage = loadModule("storage")
+    showStorageInfo = loadModule("storageview")
+end)
 
 -- Global state
 local running = true
@@ -203,14 +209,16 @@ local function init()
         Utils.printC("[--] No external monitor (optional)", colors.gray)
     end
     
-    -- Initialize storage monitor
-    Utils.printC("Initializing storage monitor...", colors.yellow)
-    storage = Storage.new(BASE_DIR)
-    local stats = storage:getStats()
-    if #stats.warnings > 0 then
-        Utils.printC("[!] Storage warnings: " .. #stats.warnings, colors.orange)
-    else
-        Utils.printC("[OK] Storage healthy", colors.green)
+    -- Initialize storage monitor (optional)
+    if Storage then
+        Utils.printC("Initializing storage monitor...", colors.yellow)
+        storage = Storage.new(BASE_DIR)
+        local stats = storage:getStats()
+        if #stats.warnings > 0 then
+            Utils.printC("[!] Storage warnings: " .. #stats.warnings, colors.orange)
+        else
+            Utils.printC("[OK] Storage healthy", colors.green)
+        end
     end
     
     print()
@@ -1962,7 +1970,16 @@ local function mainMenu()
                 safeCall(showLogs)
                 needsRedraw = true
             elseif action == "storage" then
-                safeCall(showStorageInfo, storage, GUI, Utils)
+                if storage and showStorageInfo then
+                    safeCall(showStorageInfo, storage, GUI, Utils)
+                else
+                    term.clear()
+                    term.setCursorPos(1, 1)
+                    print("Storage Info feature not available.")
+                    print("Update to latest version for this feature.")
+                    print("\nPress any key to continue...")
+                    os.pullEvent("key")
+                end
                 needsRedraw = true
             elseif action == "settings" then
                 safeCall(showSettings)
