@@ -136,6 +136,74 @@ function RSBridge:getItemDisplayNameField(item)
     return self:getField(item, "itemDisplayName", "displayName", "label") or self:getItemNameField(item)
 end
 
+-- Get NBT hash for item differentiation (empty string if no NBT)
+function RSBridge:getItemNBTHash(item)
+    if not item then return "" end
+    -- Try various NBT field names used by different mods/APIs
+    local nbt = item.nbt or item.nbtHash or item.tag or item.tags
+    if nbt then
+        if type(nbt) == "string" then
+            return nbt
+        elseif type(nbt) == "table" then
+            -- Create a simple hash from NBT table
+            return textutils.serialise(nbt)
+        end
+    end
+    return ""
+end
+
+-- Get unique item identifier (name + NBT for items with NBT data)
+function RSBridge:getUniqueItemId(item)
+    if not item then return "" end
+    local name = self:getItemNameField(item)
+    local nbt = self:getItemNBTHash(item)
+    if nbt ~= "" then
+        -- Create short hash for display
+        local hash = 0
+        for i = 1, math.min(#nbt, 100) do
+            hash = (hash * 31 + string.byte(nbt, i)) % 1000000
+        end
+        return name .. "#" .. hash
+    end
+    return name
+end
+
+-- Check if item has NBT data (useful for identifying items that may have variants)
+function RSBridge:hasNBTData(item)
+    if not item then return false end
+    local nbt = item.nbt or item.nbtHash or item.tag or item.tags
+    return nbt ~= nil and nbt ~= ""
+end
+
+-- Get a more descriptive display name for items with NBT (like bee cages)
+function RSBridge:getDetailedDisplayName(item)
+    if not item then return "Unknown" end
+    local baseName = self:getItemDisplayNameField(item)
+    
+    -- Check for NBT data that might indicate item variants
+    local nbt = item.nbt or item.tag or item.tags
+    if nbt and type(nbt) == "table" then
+        -- Common patterns for items with variants:
+        -- Productive Bees: entity field in NBT
+        if nbt.entity or nbt.EntityTag then
+            local entity = nbt.entity or nbt.EntityTag
+            if type(entity) == "table" and entity.id then
+                -- Extract bee type from entity ID (e.g., "productivebees:lumber_bee")
+                local beeType = entity.id:match(":(.+)_bee$") or entity.id:match(":(.+)$")
+                if beeType then
+                    return baseName .. " (" .. beeType .. ")"
+                end
+            end
+        end
+        -- Check for display tag with custom name
+        if nbt.display and nbt.display.Name then
+            return nbt.display.Name
+        end
+    end
+    
+    return baseName
+end
+
 -- Get fluid amount with auto-detection
 function RSBridge:getFluidAmountField(fluid)
     return self:getField(fluid, "fluidAmount", "amount", "count", "stored") or 0

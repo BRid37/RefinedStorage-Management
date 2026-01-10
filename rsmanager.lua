@@ -438,13 +438,15 @@ local function showItemSearch()
         
         term.setCursorPos(2, 19)
         term.setTextColor(colors.gray)
-        term.write("[Q] Back | Type to search")
+        term.write("[Backspace on empty] Back | Type to search")
         
         local event, key = os.pullEvent()
         if event == "key" then
-            if key == keys.q or key == keys.backspace then
-                return
-            elseif key == keys.backspace then
+            -- Only handle navigation keys, NOT letter keys (those come via char event)
+            if key == keys.backspace then
+                if searchTerm == "" then
+                    return  -- Exit if backspace on empty search
+                end
                 searchTerm = searchTerm:sub(1, -2)
                 scroll = 0
                 if searchTerm ~= "" then
@@ -464,6 +466,7 @@ local function showItemSearch()
                 -- Could add item details view here
             end
         elseif event == "char" then
+            -- All typed characters come here, including 'q'
             searchTerm = searchTerm .. key
             scroll = 0
             results = bridge:findItem(searchTerm)
@@ -693,7 +696,7 @@ showAddStockItem = function()
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
-            term.write("[Q] Cancel | [ENTER] Select | UP/DOWN")
+            term.write("[Backspace] Back | [ENTER] Select | UP/DOWN")
             
         else -- amount phase
             local item = results[selectedResult]
@@ -728,7 +731,7 @@ showAddStockItem = function()
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
-            term.write("[Q] Back | [ENTER] Confirm")
+            term.write("[Backspace] Back | [ENTER] Confirm")
         end
     end
     
@@ -740,7 +743,7 @@ showAddStockItem = function()
         
         local event, key = os.pullEvent()
         if event == "key" then
-            if key == keys.q then
+            if key == keys.escape then
                 if phase == "amount" then
                     phase = "search"
                     needsRedraw = true
@@ -749,6 +752,9 @@ showAddStockItem = function()
                 end
             elseif phase == "search" then
                 if key == keys.backspace then
+                    if searchTerm == "" then
+                        return  -- Exit if backspace on empty search
+                    end
                     searchTerm = searchTerm:sub(1, -2)
                     selectedResult = 1
                     if searchTerm ~= "" then
@@ -844,7 +850,7 @@ showEditStockItem = function(item)
         
         term.setCursorPos(2, 19)
         term.setTextColor(colors.gray)
-        term.write("[Q] Cancel | [ENTER] Save")
+        term.write("[Backspace] Cancel | [ENTER] Save")
     end
     
     while true do
@@ -855,12 +861,12 @@ showEditStockItem = function(item)
         
         local event, key = os.pullEvent()
         if event == "key" then
-            if key == keys.q then
-                return
-            elseif key == keys.backspace then
+            if key == keys.backspace then
                 if #inputStr > 0 then
                     inputStr = inputStr:sub(1, -2)
                     needsRedraw = true
+                else
+                    return  -- Exit on backspace when empty
                 end
             elseif key == keys.enter then
                 local amount = tonumber(inputStr)
@@ -1015,7 +1021,7 @@ showItemMonitor = function()
                 term.write("Type number | Backspace to delete")
                 
                 term.setCursorPos(2, 19)
-                term.write("[Q] Cancel | [ENTER] Save")
+                term.write("[Backspace] Cancel | [ENTER] Save")
             end
             
             while true do
@@ -1026,12 +1032,12 @@ showItemMonitor = function()
                 
                 local ev, k = os.pullEvent()
                 if ev == "key" then
-                    if k == keys.q then
-                        break
-                    elseif k == keys.backspace then
+                    if k == keys.backspace then
                         if #inputStr > 0 then
                             inputStr = inputStr:sub(1, -2)
                             needsRedraw = true
+                        else
+                            break  -- Exit on backspace when empty
                         end
                     elseif k == keys.enter then
                         local threshold = tonumber(inputStr)
@@ -1101,7 +1107,7 @@ showAddMonitorItem = function()
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
-            term.write("[Q] Cancel | [ENTER] Select")
+            term.write("[ESC] Cancel | [ENTER] Select")
         else
             local item = results[selectedResult]
             term.setCursorPos(2, 4)
@@ -1127,19 +1133,16 @@ showAddMonitorItem = function()
             term.write("Alert when stock falls below this")
             
             term.setCursorPos(2, 19)
-            term.write("[Q] Back | [ENTER] Add")
+            term.write("[Backspace] Back | [ENTER] Add")
         end
         
         local event, key = os.pullEvent()
         if event == "key" then
-            if key == keys.q then
-                if phase == "threshold" then
-                    phase = "search"
-                else
-                    return
-                end
-            elseif phase == "search" then
+            if phase == "search" then
                 if key == keys.backspace then
+                    if searchTerm == "" then
+                        return  -- Exit if backspace on empty search
+                    end
                     searchTerm = searchTerm:sub(1, -2)
                     selectedResult = 1
                     if searchTerm ~= "" then
@@ -1155,14 +1158,13 @@ showAddMonitorItem = function()
                     phase = "threshold"
                     threshold = results[selectedResult].amount or 64
                 end
-            else
-                if key == keys.up or key == keys.equals then
+            elseif phase == "threshold" then
+                if key == keys.backspace then
+                    phase = "search"  -- Go back to search on backspace
+                elseif key == keys.up or key == keys.equals then
                     threshold = threshold + 1
                 elseif key == keys.down or key == keys.minus then
                     threshold = math.max(1, threshold - 1)
-                elseif key == keys.backspace then
-                    threshold = math.floor(threshold / 10)
-                    if threshold < 1 then threshold = 1 end
                 elseif key == keys.enter then
                     local item = results[selectedResult]
                     -- Check if already monitored
@@ -1299,7 +1301,7 @@ showNewCraft = function()
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
-            term.write("[Q] Cancel | [ENTER] Select")
+            term.write("[ESC] Cancel | [ENTER] Select")
             
         else
             local item = results[selectedResult]
@@ -1317,19 +1319,16 @@ showNewCraft = function()
             
             term.setCursorPos(2, 19)
             term.setTextColor(colors.gray)
-            term.write("[Q] Back | [ENTER] Start Craft")
+            term.write("[Backspace] Back | [ENTER] Start Craft")
         end
         
         local event, key = os.pullEvent()
         if event == "key" then
-            if key == keys.q or key == keys.backspace then
-                if phase == "amount" then
-                    phase = "search"
-                else
-                    return
-                end
-            elseif phase == "search" then
+            if phase == "search" then
                 if key == keys.backspace then
+                    if searchTerm == "" then
+                        return  -- Exit if backspace on empty search
+                    end
                     searchTerm = searchTerm:sub(1, -2)
                     selectedResult = 1
                     if searchTerm ~= "" then
@@ -1344,8 +1343,10 @@ showNewCraft = function()
                 elseif key == keys.enter and #results > 0 then
                     phase = "amount"
                 end
-            else
-                if key == keys.up then
+            elseif phase == "amount" then
+                if key == keys.backspace then
+                    phase = "search"  -- Go back to search on backspace
+                elseif key == keys.up then
                     amount = amount + 1
                 elseif key == keys.down then
                     amount = math.max(1, amount - 1)
@@ -1353,9 +1354,6 @@ showNewCraft = function()
                     amount = amount + 64
                 elseif key == keys.pageDown then
                     amount = math.max(1, amount - 64)
-                elseif key == keys.backspace then
-                    amount = math.floor(amount / 10)
-                    if amount < 1 then amount = 1 end
                 elseif key == keys.enter then
                     bridge:craftItem(results[selectedResult].name, amount)
                     return
@@ -1749,10 +1747,17 @@ local function stockKeeperTask()
     while running do
         local ok, err = pcall(function()
             if stockKeeper and stockKeeper:isEnabled() then
-                local craftedAny = stockKeeper:check()
+                local craftedAny, craftedItems = stockKeeper:check()
                 -- If we initiated any crafting jobs, refresh monitor immediately
                 if craftedAny and monitor and monitor:hasMonitor() and config.useMonitor then
-                    monitor:update()
+                    -- Track crafts for ETA display
+                    if craftedItems then
+                        for _, craft in ipairs(craftedItems) do
+                            monitor:trackCraftRequest(craft.name, craft.displayName, craft.amount)
+                        end
+                    end
+                    monitor:enableFastRefresh(60)
+                    monitor:requestUpdate()
                 end
             end
         end)
@@ -1765,26 +1770,35 @@ end
 
 -- Background monitor update task (wrapped in error handler)
 -- Only updates external monitor, not main terminal
--- Uses timer-based updates for precise timing like reactor controllers
+-- Uses dynamic refresh rate based on activity
 local function monitorTask()
     while running do
         local ok, err = pcall(function()
             if monitor and monitor:hasMonitor() and config.useMonitor then
                 monitor:update()
+                -- Clear pending update flag after update
+                monitor.pendingUpdate = false
             end
         end)
         if not ok then
             Utils.log("Monitor error: " .. tostring(err), "ERROR")
         end
         
-        -- Use timer for precise refresh rate (best practice for CC monitors)
-        local refreshRate = config.refreshRate or 1
+        -- Use dynamic refresh rate based on monitor state
+        local refreshRate = config.refreshRate or 2
+        if monitor and monitor.getRefreshRate then
+            refreshRate = monitor:getRefreshRate()
+        end
         local timer = os.startTimer(refreshRate)
         
-        -- Wait for timer, but allow early exit if program stops
+        -- Wait for timer, but allow early exit if program stops or pending update
         while running do
             local event, param = os.pullEvent()
             if event == "timer" and param == timer then
+                break
+            elseif event == "monitor_update" then
+                -- Custom event to trigger immediate update
+                os.cancelTimer(timer)
                 break
             end
         end
