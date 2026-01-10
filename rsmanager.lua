@@ -1883,11 +1883,39 @@ local function mainMenu()
     end
 end
 
+-- Graceful shutdown handler
+local function gracefulShutdown()
+    Utils.log("Initiating graceful shutdown...")
+    
+    -- Signal bridge to complete pending operations
+    if bridge then
+        local safeShutdown = bridge:beginShutdown()
+        if not safeShutdown then
+            Utils.log("WARNING: Shutdown with pending API calls", "WARN")
+        end
+    end
+    
+    -- Save any pending stock keeper state
+    if stockKeeper then
+        stockKeeper:save()
+    end
+    
+    Utils.log("Graceful shutdown complete")
+end
+
 -- Main entry point with global error handling
 local function main()
     local ok, err = pcall(function()
         if not init() then
             return
+        end
+        
+        -- Recover from previous crash if needed
+        if bridge then
+            local recovered = bridge:recoverState()
+            if recovered then
+                Utils.log("Recovered state from previous session")
+            end
         end
         
         -- Do initial monitor update to show stock keeper items immediately
@@ -1902,6 +1930,9 @@ local function main()
             monitorTask
         )
     end)
+    
+    -- Always attempt graceful shutdown
+    pcall(gracefulShutdown)
     
     -- Cleanup
     term.clear()
