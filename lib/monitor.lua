@@ -164,6 +164,33 @@ function Monitor:getActiveCraftsWithETA()
     return result
 end
 
+-- Detect and track stock changes by comparing current counts to last known counts
+function Monitor:detectStockChanges()
+    if not self.stockKeeper then return end
+    
+    local items = self.stockKeeper:getItems() or {}
+    local now = os.epoch("utc") / 1000
+    
+    for _, item in ipairs(items) do
+        if item and item.name then
+            local current = self.bridge:getItemAmount(item.name) or 0
+            local lastCount = self.lastItemCounts[item.name]
+            
+            -- Track change if count changed significantly
+            if lastCount and lastCount ~= current then
+                local delta = current - lastCount
+                -- Only track meaningful changes (more than 0)
+                if math.abs(delta) > 0 then
+                    self:trackStockChange(item.name, item.displayName, lastCount, current)
+                end
+            end
+            
+            -- Update last known count
+            self.lastItemCounts[item.name] = current
+        end
+    end
+end
+
 -- Get recent activity (changes + crafts)
 function Monitor:getRecentActivity(maxItems)
     maxItems = maxItems or 5
@@ -434,6 +461,14 @@ end
 function Monitor:update()
     if not self.monitor then return end
     
+    -- Force refresh item data from bridge to get latest counts
+    if self.bridge then
+        self.bridge:listItems(true)  -- Force cache refresh
+    end
+    
+    -- Track stock changes for activity feed
+    self:detectStockChanges()
+    
     -- Refresh size in case monitor changed
     local ok, newW, newH = pcall(function()
         return self.monitor.getSize()
@@ -541,7 +576,7 @@ function Monitor:drawSmallLayout()
         y = y + 2
         
         -- Low stock (limited)
-        local lowStock = self.stockKeeper:getLowStock()
+        local lowStock = self.stockKeeper:getLowStock(true)
         local maxShow = math.min(3, #lowStock, self.height - y - 1)
         for i = 1, maxShow do
             local item = lowStock[i]
@@ -614,7 +649,7 @@ function Monitor:drawMediumLayout()
         ry = ry + 2
         
         -- Low stock list
-        local lowStock = self.stockKeeper:getLowStock()
+        local lowStock = self.stockKeeper:getLowStock(true)
         if #lowStock > 0 then
             self:write(halfW + 2, ry, "Low Stock:", colors.red)
             ry = ry + 1
@@ -704,7 +739,7 @@ function Monitor:drawLargeLayout()
         y = y + 2
         
         -- Low stock list with progress bars
-        local lowStock = self.stockKeeper:getLowStock()
+        local lowStock = self.stockKeeper:getLowStock(true)
         if #lowStock > 0 then
             self:write(colWidth + 3, y, "--- Low Stock ---", colors.red)
             y = y + 1
@@ -888,7 +923,7 @@ function Monitor:drawSmallLayoutDynamic()
     -- Low stock items only (prioritize critical issues)
     local hasStock = self.stockKeeper and self.stockKeeper:getActiveCount() > 0
     if hasStock then
-        local lowStock = self.stockKeeper:getLowStock()
+        local lowStock = self.stockKeeper:getLowStock(true)  -- Force refresh for accurate counts
         local status = self.stockKeeper:getStatus()
         
         if #lowStock > 0 then
@@ -902,7 +937,17 @@ function Monitor:drawSmallLayoutDynamic()
                     local name = Utils.truncate(item.displayName or item.name or "?", lineWidth - 12)
                     local statusChar = item.patternStatus == "no_pattern" and "X" or (item.current >= item.target * 0.5 and "~" or "!")
                     local statusColor = item.patternStatus == "no_pattern" and colors.magenta or (item.current >= item.target * 0.5 and colors.orange or colors.red)
-                    self:writePadded(2, y, statusChar .. " " .. name .. " " .. item.current .. "/" .. item.target, lineWidth, statusColor)
+                    
+                    -- Special display for always-craft items
+                    local displayText
+                    if item.alwaysCraft then
+                        displayText = "* " .. name .. " (Auto)"
+                        statusColor = colors.purple
+                    else
+                        displayText = statusChar .. " " .. name .. " " .. item.current .. "/" .. item.target
+                    end
+                    
+                    self:writePadded(2, y, displayText, lineWidth, statusColor)
                     y = y + 1
                 end
             end
@@ -997,7 +1042,7 @@ function Monitor:drawMediumLayoutDynamic()
     
     if hasStock then
         local status = self.stockKeeper:getStatus()
-        local lowStock = self.stockKeeper:getLowStock()
+        local lowStock = self.stockKeeper:getLowStock(true)
         
         self:writePadded(halfW + 2, ry, "=== Low Stock ===", colWidth, colors.orange)
         ry = ry + 1
@@ -1097,7 +1142,7 @@ function Monitor:drawLargeLayoutDynamic()
     
     if hasStock then
         local status = self.stockKeeper:getStatus()
-        local lowStock = self.stockKeeper:getLowStock()
+        local lowStock = self.stockKeeper:getLowStock(true)
         
         self:writePadded(col2X, y, "=== Low Stock ===", colWidth, colors.orange)
         y = y + 1

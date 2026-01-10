@@ -244,22 +244,31 @@ function StockKeeper:getLowStock(forceRefresh)
             local current = self.bridge:getItemAmount(item.name) or 0
             local target = item.amount or 1
             
-            -- Clear pending craft if item is now stocked
-            if current >= target then
+            -- Special case: -1 means "always craft if materials available"
+            local alwaysCraft = (target == -1)
+            
+            -- Clear pending craft if item is now stocked (unless always-craft mode)
+            if not alwaysCraft and current >= target then
                 self.bridge:clearPendingCraft(item.name)
             end
             
-            if current < target then
+            -- For always-craft mode, always add to low stock list
+            -- For normal mode, add if current < target
+            if alwaysCraft or current < target then
+                -- For always-craft mode, craft 1 at a time if we have materials
+                local craftAmount = alwaysCraft and 1 or math.max(0, target - current)
+                
                 table.insert(lowStock, {
                     name = item.name,
                     displayName = item.displayName or item.name,
                     current = current,
                     target = target,
-                    needed = math.max(0, target - current),
+                    needed = craftAmount,
                     priority = item.priority or 1,
                     patternStatus = item.patternStatus or StockKeeper.STATUS_OK,
                     lastCraftStatus = item.lastCraftStatus,
-                    lastCraftTime = item.lastCraftTime
+                    lastCraftTime = item.lastCraftTime,
+                    alwaysCraft = alwaysCraft
                 })
             end
         end
@@ -303,23 +312,28 @@ function StockKeeper:check()
             goto continue
         end
         
-        -- Check if we already have a pending craft request for this item
-        -- This prevents duplicate craft requests when API calls fail
-        local hasPending, pendingAmount = self.bridge:hasPendingCraft(item.name, 120)  -- 2 minute timeout
+        -- FIRST: Check if already crafting via API (most reliable check)
+        local isCrafting = self.bridge:isItemCrafting(item.name)
+        
+        if isCrafting then
+            -- Already crafting, mark as pending and skip
+            self:updateItemCraftStatus(item.name, StockKeeper.STATUS_CRAFTING)
+            self.bridge:markCraftPending(item.name, item.needed, item.target)
+            goto continue
+        end
+        
+        -- SECOND: Check our internal pending craft tracker
+        -- For always-craft items, use longer timeout since they continuously craft
+        local timeout = item.alwaysCraft and 300 or 120  -- 5 min for always-craft, 2 min for normal
+        local hasPending, pendingAmount = self.bridge:hasPendingCraft(item.name, timeout)
         if hasPending then
             -- We already requested a craft, skip until timeout expires
             self:updateItemCraftStatus(item.name, StockKeeper.STATUS_CRAFTING)
             goto continue
         end
         
-        -- Check if already crafting (via API)
-        local isCrafting = self.bridge:isItemCrafting(item.name)
-        
-        if isCrafting then
-            -- Update status and mark as pending to prevent duplicate requests
-            self:updateItemCraftStatus(item.name, StockKeeper.STATUS_CRAFTING)
-            self.bridge:markCraftPending(item.name, item.needed, item.target)
-        else
+        -- THIRD: If no active craft detected, try to start one
+        if true then
             -- Try to craft
             local success, reason = self.bridge:craftItem(item.name, item.needed)
             

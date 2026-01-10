@@ -26,6 +26,8 @@ local Monitor = loadModule("monitor")
 local GUI = loadModule("gui")
 local Utils = loadModule("utils")
 local Updater = loadModule("updater")
+local Storage = loadModule("storage")
+local showStorageInfo = loadModule("storageview")
 
 -- Global state
 local running = true
@@ -35,6 +37,7 @@ local bridge = nil
 local stockKeeper = nil
 local monitor = nil
 local updater = nil
+local storage = nil
 
 -- Item Monitor data (stored separately from stock keeper)
 local monitoredItems = {}
@@ -184,6 +187,16 @@ local function init()
         Utils.printC("[--] No external monitor (optional)", colors.gray)
     end
     
+    -- Initialize storage monitor
+    Utils.printC("Initializing storage monitor...", colors.yellow)
+    storage = Storage.new(BASE_DIR)
+    local stats = storage:getStats()
+    if #stats.warnings > 0 then
+        Utils.printC("[!] Storage warnings: " .. #stats.warnings, colors.orange)
+    else
+        Utils.printC("[OK] Storage healthy", colors.green)
+    end
+    
     print()
     Utils.printC("System ready! Starting in ", colors.lime)
     
@@ -225,6 +238,7 @@ local menuOptions = {
     {name = "Item Monitor", action = "itemmonitor", color = colors.lightBlue},
     {name = "Crafting Queue", action = "crafting", color = colors.purple},
     {name = "System Stats", action = "stats", color = colors.yellow},
+    {name = "Storage Info", action = "storage", color = colors.pink},
     {name = "Logs", action = "logs", color = colors.brown},
     {name = "Settings", action = "settings", color = colors.lightGray},
     {name = "Exit", action = "exit", color = colors.red}
@@ -1805,6 +1819,64 @@ local function monitorTask()
     end
 end
 
+-- Background update checker task
+local updateAvailable = false
+local function updateCheckerTask()
+    -- Wait 5 minutes before first check to let program stabilize
+    sleep(300)
+    
+    while running do
+        local ok, err = pcall(function()
+            if updater then
+                local hasUpdate = updater:backgroundCheck()
+                if hasUpdate and not updateAvailable then
+                    updateAvailable = true
+                    Utils.log("Update available! Will apply on next safe opportunity.", "INFO")
+                    
+                    -- If auto-update enabled, apply update safely
+                    if config.autoUpdate ~= false then
+                        -- Queue the update - it will be applied during next idle period
+                        os.queueEvent("update_available")
+                    end
+                end
+            end
+        end)
+        if not ok then
+            Utils.log("Update check error: " .. tostring(err), "WARN")
+        end
+        
+        -- Check for updates every 24 hours (86400 seconds)
+        sleep(86400)
+    end
+end
+
+-- Handle update event - applies update safely
+local function handleUpdateEvent()
+    while running do
+        local event = os.pullEvent("update_available")
+        if event == "update_available" and updateAvailable and config.autoUpdate ~= false then
+            -- Show notification on terminal
+            term.setCursorPos(1, 1)
+            term.setBackgroundColor(colors.blue)
+            term.clearLine()
+            term.setTextColor(colors.white)
+            term.write(" Update available! Press U to update now, or wait for auto-update ")
+            term.setBackgroundColor(colors.black)
+            
+            -- Wait a moment for user to see
+            sleep(3)
+            
+            -- Auto-update if enabled and no user interaction
+            if config.autoUpdate ~= false and updateAvailable then
+                Utils.log("Applying auto-update...", "INFO")
+                updater:safeUpdate(gracefulShutdown, function(msg)
+                    Utils.log("Update: " .. msg, "INFO")
+                end)
+            end
+        end
+    end
+end
+
 -- Safe function wrapper for menu actions
 local function safeCall(func, ...)
     local args = {...}
@@ -1873,8 +1945,28 @@ local function mainMenu()
             elseif action == "logs" then
                 safeCall(showLogs)
                 needsRedraw = true
+            elseif action == "storage" then
+                safeCall(showStorageInfo, storage, GUI, Utils)
+                needsRedraw = true
             elseif action == "settings" then
                 safeCall(showSettings)
+                needsRedraw = true
+            end
+        elseif key == keys.u then
+            -- Manual update check
+            if updater then
+                term.clear()
+                term.setCursorPos(1, 1)
+                print("Checking for updates...")
+                local hasUpdate = updater:backgroundCheck()
+                if hasUpdate then
+                    print("Update found! Installing...")
+                    updater:safeUpdate(gracefulShutdown, print)
+                else
+                    print("No updates available.")
+                    print("Press any key to continue...")
+                    os.pullEvent("key")
+                end
                 needsRedraw = true
             end
         elseif key == keys.q then
@@ -1927,7 +2019,8 @@ local function main()
         parallel.waitForAny(
             mainMenu,
             stockKeeperTask,
-            monitorTask
+            monitorTask,
+            updateCheckerTask
         )
     end)
     
