@@ -287,7 +287,7 @@ function StockKeeper:getLowStock(forceRefresh)
 end
 
 function StockKeeper:check()
-    if not self.enabled then return end
+    if not self.enabled then return false, {} end
     
     -- Periodically validate patterns
     self:validatePatterns()
@@ -295,6 +295,7 @@ function StockKeeper:check()
     -- Force refresh item list for accurate counts during stock check
     local lowStock = self:getLowStock(true)
     local craftedAny = false
+    local craftedItems = {}  -- Track what we crafted for monitor display
     
     for _, item in ipairs(lowStock) do
         -- Skip items with missing patterns
@@ -331,6 +332,12 @@ function StockKeeper:check()
                 -- Mark as pending to prevent duplicate requests
                 self.bridge:markCraftPending(item.name, item.needed, item.target)
                 craftedAny = true
+                -- Track for monitor display
+                table.insert(craftedItems, {
+                    name = item.name,
+                    displayName = item.displayName,
+                    amount = item.needed
+                })
             else
                 -- Track the failure reason
                 if reason == "no_pattern" then
@@ -354,7 +361,7 @@ function StockKeeper:check()
         ::continue::
     end
     
-    return craftedAny
+    return craftedAny, craftedItems
 end
 
 -- Update craft status for an item

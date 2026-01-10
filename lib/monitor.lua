@@ -53,6 +53,14 @@ function Monitor.new(bridge, stockKeeper, monitoredItems, config)
     self.scrollTimer = 0
     self.lastScrollTime = os.epoch("utc") / 1000
     
+    -- Activity tracking for dynamic display
+    self.recentChanges = {}     -- {name, displayName, oldAmount, newAmount, time}
+    self.recentCrafts = {}      -- {name, displayName, amount, startTime, estimatedEnd}
+    self.lastItemCounts = {}    -- Track previous item counts to detect changes
+    self.pendingUpdate = false  -- Flag for priority update
+    self.lastUpdateTime = 0
+    self.fastRefreshUntil = 0   -- Timestamp until which we use fast refresh
+    
     self:findMonitor()
     return self
 end
@@ -60,6 +68,131 @@ end
 -- Update monitored items reference
 function Monitor:setMonitoredItems(items)
     self.monitoredItems = items or {}
+end
+
+-- Request immediate update (call after user actions like crafting)
+function Monitor:requestUpdate()
+    self.pendingUpdate = true
+end
+
+-- Enable fast refresh mode for a duration (e.g., after starting a craft)
+function Monitor:enableFastRefresh(durationSeconds)
+    durationSeconds = durationSeconds or 30
+    self.fastRefreshUntil = os.epoch("utc") / 1000 + durationSeconds
+end
+
+-- Check if we should use fast refresh
+function Monitor:shouldFastRefresh()
+    return os.epoch("utc") / 1000 < self.fastRefreshUntil
+end
+
+-- Get current refresh rate based on state
+function Monitor:getRefreshRate()
+    if self.pendingUpdate then
+        return 0.5  -- Immediate update
+    elseif self:shouldFastRefresh() then
+        return 1    -- Fast refresh during expected changes
+    else
+        return self.config.refreshRate or 2  -- Normal rate
+    end
+end
+
+-- Track a craft request for display
+function Monitor:trackCraftRequest(name, displayName, amount)
+    -- Add to recent crafts with estimated completion
+    local now = os.epoch("utc") / 1000
+    table.insert(self.recentCrafts, 1, {
+        name = name,
+        displayName = displayName or name,
+        amount = amount,
+        startTime = now,
+        -- Rough estimate: 1 second per item, capped at 5 minutes
+        estimatedEnd = now + math.min(amount * 1, 300)
+    })
+    -- Keep only last 10 craft requests
+    while #self.recentCrafts > 10 do
+        table.remove(self.recentCrafts)
+    end
+    -- Enable fast refresh to show crafting progress
+    self:enableFastRefresh(60)
+    self:requestUpdate()
+end
+
+-- Track stock changes for activity feed
+function Monitor:trackStockChange(name, displayName, oldAmount, newAmount)
+    if oldAmount == newAmount then return end
+    local now = os.epoch("utc") / 1000
+    table.insert(self.recentChanges, 1, {
+        name = name,
+        displayName = displayName or name,
+        oldAmount = oldAmount,
+        newAmount = newAmount,
+        delta = newAmount - oldAmount,
+        time = now
+    })
+    -- Keep only last 20 changes
+    while #self.recentChanges > 20 do
+        table.remove(self.recentChanges)
+    end
+end
+
+-- Get active crafting jobs with ETA
+function Monitor:getActiveCraftsWithETA()
+    local tasks = self.bridge:getCraftingTasks() or {}
+    local now = os.epoch("utc") / 1000
+    local result = {}
+    
+    for _, task in ipairs(tasks) do
+        local eta = nil
+        -- Try to find matching tracked craft for ETA
+        for _, tracked in ipairs(self.recentCrafts) do
+            if tracked.name == task.name then
+                if tracked.estimatedEnd > now then
+                    eta = math.ceil(tracked.estimatedEnd - now)
+                end
+                break
+            end
+        end
+        table.insert(result, {
+            name = task.name,
+            displayName = task.displayName or task.name,
+            amount = task.amount,
+            progress = task.progress,
+            eta = eta
+        })
+    end
+    return result
+end
+
+-- Get recent activity (changes + crafts)
+function Monitor:getRecentActivity(maxItems)
+    maxItems = maxItems or 5
+    local now = os.epoch("utc") / 1000
+    local activity = {}
+    
+    -- Add recent changes (within last 5 minutes)
+    for _, change in ipairs(self.recentChanges) do
+        if now - change.time < 300 then
+            table.insert(activity, {
+                type = "change",
+                name = change.name,
+                displayName = change.displayName,
+                delta = change.delta,
+                time = change.time,
+                age = now - change.time
+            })
+        end
+    end
+    
+    -- Sort by time (most recent first)
+    table.sort(activity, function(a, b) return a.time > b.time end)
+    
+    -- Limit results
+    while #activity > maxItems do
+        table.remove(activity)
+    end
+    
+    return activity
 end
 
 function Monitor:findMonitor()
@@ -735,65 +868,64 @@ function Monitor:drawSmallLayoutDynamic()
         y = y + 2
     end
     
-    -- Items count and storage info
-    local items, totalItems = self:getItemData()
-    local itemTypes = #items
-    self:writePadded(2, y, "Items: " .. Utils.formatNumber(totalItems), lineWidth, colors.cyan)
-    y = y + 1
-    self:writePadded(2, y, "Types: " .. itemTypes, lineWidth, colors.white)
-    y = y + 2
-    
-    -- Dynamic sections based on what's active
-    local hasStock = self.stockKeeper and self.stockKeeper:getActiveCount() > 0
-    local hasMonitor = self.monitoredItems and #self.monitoredItems > 0
-    local tasks = self.bridge:getCraftingTasks() or {}
-    local hasCrafting = #tasks > 0
-    
-    -- Stock Keeper (if has items)
-    if hasStock then
-        local status = self.stockKeeper:getStatus()
-        local allItems = self.stockKeeper:getItems()
-        self:writePadded(2, y, "=== Stock Keeper ===", lineWidth, colors.orange)
+    -- Active crafting with ETA (priority display)
+    local craftsWithETA = self:getActiveCraftsWithETA()
+    if #craftsWithETA > 0 then
+        self:writePadded(2, y, "=== Crafting ===", lineWidth, colors.purple)
         y = y + 1
-        self:writePadded(2, y, "OK:" .. status.satisfied .. " Low:" .. status.low .. " Crit:" .. status.critical, lineWidth, colors.white)
-        y = y + 2
-        
-        -- Show all stock keeper items, not just low stock
-        local maxShow = math.min(6, #allItems, self.height - y - 2)
-        for i = 1, maxShow do
-            local item = allItems[i]
-            if item then
-                local current = self.bridge:getItemAmount(item.name) or 0
-                local target = item.amount or 0
-                local name = Utils.truncate(item.displayName or item.name or "?", lineWidth - 12)
-                local statusChar = current >= target and "+" or (current >= target * 0.5 and "~" or "!")
-                local statusColor = current >= target and colors.green or (current >= target * 0.5 and colors.orange or colors.red)
-                self:writePadded(2, y, statusChar .. " " .. name .. " " .. current .. "/" .. target, lineWidth, statusColor)
-                y = y + 1
-            end
+        local maxCrafts = math.min(3, #craftsWithETA)
+        for i = 1, maxCrafts do
+            local craft = craftsWithETA[i]
+            local name = Utils.truncate(craft.displayName or craft.name or "?", lineWidth - 14)
+            local etaStr = craft.eta and (" ~" .. craft.eta .. "s") or ""
+            local progStr = craft.progress and (math.floor(craft.progress * 100) .. "%") or "..."
+            self:writePadded(2, y, name .. " " .. progStr .. etaStr, lineWidth, colors.lightGray)
+            y = y + 1
         end
         y = y + 1
     end
     
-    -- Item Monitor (if has items)
-    if hasMonitor and y < self.height - 2 then
-        self:writePadded(2, y, "=== Item Monitor ===", lineWidth, colors.lightBlue)
-        y = y + 1
+    -- Low stock items only (prioritize critical issues)
+    local hasStock = self.stockKeeper and self.stockKeeper:getActiveCount() > 0
+    if hasStock then
+        local lowStock = self.stockKeeper:getLowStock()
+        local status = self.stockKeeper:getStatus()
         
-        local maxShow = math.min(4, #self.monitoredItems, self.height - y - 1)
-        for i = 1, maxShow do
-            local item = self.monitoredItems[i]
-            if item then
-                local current = self.bridge:getItemAmount(item.name) or 0
-                local threshold = item.threshold or 0
-                local name = Utils.truncate(item.displayName or item.name or "?", lineWidth - 12)
-                local statusChar = current < threshold and "!" or " "
-                local statusColor = current < threshold and colors.red or colors.green
-                self:writePadded(2, y, statusChar .. " " .. name .. " " .. current, lineWidth, statusColor)
-                y = y + 1
+        if #lowStock > 0 then
+            self:writePadded(2, y, "=== Low Stock (" .. #lowStock .. ") ===", lineWidth, colors.orange)
+            y = y + 1
+            
+            local maxShow = math.min(5, #lowStock, self.height - y - 2)
+            for i = 1, maxShow do
+                local item = lowStock[i]
+                if item then
+                    local name = Utils.truncate(item.displayName or item.name or "?", lineWidth - 12)
+                    local statusChar = item.patternStatus == "no_pattern" and "X" or (item.current >= item.target * 0.5 and "~" or "!")
+                    local statusColor = item.patternStatus == "no_pattern" and colors.magenta or (item.current >= item.target * 0.5 and colors.orange or colors.red)
+                    self:writePadded(2, y, statusChar .. " " .. name .. " " .. item.current .. "/" .. item.target, lineWidth, statusColor)
+                    y = y + 1
+                end
             end
+        else
+            self:writePadded(2, y, "All " .. status.total .. " items stocked!", lineWidth, colors.green)
+            y = y + 1
         end
         y = y + 1
+    end
+    
+    -- Recent activity (stock changes)
+    local activity = self:getRecentActivity(3)
+    if #activity > 0 and y < self.height - 2 then
+        self:writePadded(2, y, "=== Recent ===", lineWidth, colors.lightBlue)
+        y = y + 1
+        for _, act in ipairs(activity) do
+            if y >= self.height - 1 then break end
+            local name = Utils.truncate(act.displayName or act.name or "?", lineWidth - 10)
+            local deltaStr = act.delta > 0 and ("+" .. Utils.formatNumber(act.delta)) or Utils.formatNumber(act.delta)
+            local color = act.delta > 0 and colors.green or colors.red
+            self:writePadded(2, y, name .. " " .. deltaStr, lineWidth, color)
+            y = y + 1
+        end
     end
     
     -- Clear remaining lines
@@ -809,45 +941,49 @@ function Monitor:drawMediumLayoutDynamic()
     
     -- Determine what sections to show
     local hasStock = self.stockKeeper and self.stockKeeper:getActiveCount() > 0
-    local hasMonitor = self.monitoredItems and #self.monitoredItems > 0
-    local tasks = self.bridge:getCraftingTasks() or {}
-    local hasCrafting = #tasks > 0
+    local craftsWithETA = self:getActiveCraftsWithETA()
+    local hasCrafting = #craftsWithETA > 0
     
-    -- === LEFT COLUMN ===
+    -- === LEFT COLUMN: Crafting & Stats ===
     local y = 3
+    
+    -- Active crafting with ETA (priority)
+    if hasCrafting then
+        self:writePadded(2, y, "=== Crafting ===", colWidth, colors.purple)
+        y = y + 1
+        local maxTasks = math.min(5, #craftsWithETA)
+        for i = 1, maxTasks do
+            local craft = craftsWithETA[i]
+            local name = Utils.truncate(craft.displayName or craft.name or "?", colWidth - 12)
+            local etaStr = craft.eta and (" ~" .. craft.eta .. "s") or ""
+            local progStr = craft.progress and (math.floor(craft.progress * 100) .. "%") or "..."
+            self:writePadded(2, y, name .. " " .. progStr .. etaStr, colWidth, colors.lightGray)
+            y = y + 1
+        end
+        y = y + 1
+    end
+    
+    -- Recent activity
+    local activity = self:getRecentActivity(4)
+    if #activity > 0 then
+        self:writePadded(2, y, "=== Recent Activity ===", colWidth, colors.lightBlue)
+        y = y + 1
+        for _, act in ipairs(activity) do
+            if y >= self.height - 1 then break end
+            local name = Utils.truncate(act.displayName or "?", colWidth - 8)
+            local deltaStr = act.delta > 0 and ("+" .. Utils.formatNumber(act.delta)) or Utils.formatNumber(act.delta)
+            local color = act.delta > 0 and colors.green or colors.red
+            self:writePadded(2, y, name .. " " .. deltaStr, colWidth, color)
+            y = y + 1
+        end
+        y = y + 1
+    end
     
     -- Energy (only show if low)
     local energy, maxEnergy, energyPercent = self:getEnergyData()
-    local energyColor = self:getEnergyColor(energyPercent)
-    
     if energyPercent < 25 then
         self:writePadded(2, y, "Energy: " .. energyPercent .. "% LOW!", colWidth, colors.red)
         y = y + 1
-        self:drawProgressBar(2, y, halfW - 4, energyPercent, energyColor, true)
-        y = y + 2
-    end
-    
-    -- Storage
-    local items, totalItems = self:getItemData()
-    local itemTypes = #items
-    self:writePadded(2, y, "Items: " .. Utils.formatNumber(totalItems), colWidth, colors.cyan)
-    y = y + 1
-    self:writePadded(2, y, "Types: " .. itemTypes, colWidth, colors.white)
-    y = y + 2
-    
-    -- Crafting (if active)
-    if hasCrafting then
-        self:writePadded(2, y, "Crafting: " .. #tasks, colWidth, colors.purple)
-        y = y + 1
-        local maxTasks = math.min(3, #tasks, self.height - y - 1)
-        for i = 1, maxTasks do
-            local task = tasks[i]
-            if task then
-                local name = Utils.truncate(task.displayName or task.name or "?", colWidth - 2)
-                self:writePadded(3, y, name, colWidth - 1, colors.lightGray)
-                y = y + 1
-            end
-        end
     end
     
     -- Clear rest of left column
@@ -856,13 +992,14 @@ function Monitor:drawMediumLayoutDynamic()
         y = y + 1
     end
     
-    -- === RIGHT COLUMN ===
+    -- === RIGHT COLUMN: Low Stock ===
     local ry = 3
     
-    -- Stock Keeper section
     if hasStock then
         local status = self.stockKeeper:getStatus()
-        self:writePadded(halfW + 2, ry, "Stock Keeper", colWidth, colors.orange)
+        local lowStock = self.stockKeeper:getLowStock()
+        
+        self:writePadded(halfW + 2, ry, "=== Low Stock ===", colWidth, colors.orange)
         ry = ry + 1
         
         if status.enabled then
@@ -872,39 +1009,23 @@ function Monitor:drawMediumLayoutDynamic()
         end
         ry = ry + 2
         
-        local lowStock = self.stockKeeper:getLowStock()
-        local maxShow = math.min(4, #lowStock)
-        for i = 1, maxShow do
-            local item = lowStock[i]
-            if item then
-                local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 10)
-                local status_char = item.patternStatus == "no_pattern" and "X" or "!"
-                self:writePadded(halfW + 2, ry, status_char .. " " .. name, colWidth, item.patternStatus == "no_pattern" and colors.magenta or colors.red)
-                ry = ry + 1
+        if #lowStock > 0 then
+            local maxShow = math.min(self.height - ry - 1, #lowStock)
+            for i = 1, maxShow do
+                local item = lowStock[i]
+                if item then
+                    local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 12)
+                    local statusChar = item.patternStatus == "no_pattern" and "X" or (item.current >= item.target * 0.5 and "~" or "!")
+                    local statusColor = item.patternStatus == "no_pattern" and colors.magenta or (item.current >= item.target * 0.5 and colors.orange or colors.red)
+                    local amtStr = item.current .. "/" .. item.target
+                    self:writePadded(halfW + 2, ry, statusChar .. " " .. name, colWidth - #amtStr - 1, statusColor)
+                    self:writePadded(halfW + colWidth - #amtStr, ry, amtStr, #amtStr + 1, colors.gray)
+                    ry = ry + 1
+                end
             end
-        end
-        ry = ry + 1
-    end
-    
-    -- Item Monitor section
-    if hasMonitor and ry < self.height - 2 then
-        self:writePadded(halfW + 2, ry, "Item Monitor", colWidth, colors.lightBlue)
-        ry = ry + 1
-        
-        local alerts = self:getMonitorAlerts()
-        local maxShow = math.min(4, #self.monitoredItems, self.height - ry - 1)
-        
-        for i = 1, maxShow do
-            local item = self.monitoredItems[i]
-            if item then
-                local current = self.bridge:getItemAmount(item.name) or 0
-                local threshold = item.threshold or 0
-                local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 12)
-                local color = current < threshold and colors.red or colors.green
-                local status_char = current < threshold and "!" or " "
-                self:writePadded(halfW + 2, ry, status_char .. " " .. name .. " " .. Utils.formatNumber(current), colWidth, color)
-                ry = ry + 1
-            end
+        else
+            self:writePadded(halfW + 2, ry, "All items stocked!", colWidth, colors.green)
+            ry = ry + 1
         end
     end
     
@@ -920,61 +1041,49 @@ function Monitor:drawLargeLayoutDynamic()
     local colWidth = math.floor(self.width / 3) - 1
     
     local hasStock = self.stockKeeper and self.stockKeeper:getActiveCount() > 0
-    local hasMonitor = self.monitoredItems and #self.monitoredItems > 0
-    local tasks = self.bridge:getCraftingTasks() or {}
-    local hasCrafting = #tasks > 0
+    local craftsWithETA = self:getActiveCraftsWithETA()
+    local hasCrafting = #craftsWithETA > 0
     
-    -- === COLUMN 1: System ===
+    -- === COLUMN 1: Crafting & Activity ===
     local y = 3
-    self:writePadded(2, y, "=== System ===", colWidth, colors.yellow)
-    y = y + 1
+    
+    -- Active crafting with ETA (priority display)
+    if hasCrafting then
+        self:writePadded(2, y, "=== Crafting ===", colWidth, colors.purple)
+        y = y + 1
+        local maxTasks = math.min(6, #craftsWithETA)
+        for i = 1, maxTasks do
+            local craft = craftsWithETA[i]
+            local name = Utils.truncate(craft.displayName or craft.name or "?", colWidth - 14)
+            local etaStr = craft.eta and (" ~" .. craft.eta .. "s") or ""
+            local progStr = craft.progress and (math.floor(craft.progress * 100) .. "%") or "..."
+            self:writePadded(2, y, name .. " " .. progStr .. etaStr, colWidth, colors.lightGray)
+            y = y + 1
+        end
+        y = y + 1
+    end
+    
+    -- Recent activity
+    local activity = self:getRecentActivity(6)
+    if #activity > 0 then
+        self:writePadded(2, y, "=== Recent Activity ===", colWidth, colors.lightBlue)
+        y = y + 1
+        for _, act in ipairs(activity) do
+            if y >= self.height - 2 then break end
+            local name = Utils.truncate(act.displayName or "?", colWidth - 10)
+            local deltaStr = act.delta > 0 and ("+" .. Utils.formatNumber(act.delta)) or Utils.formatNumber(act.delta)
+            local color = act.delta > 0 and colors.green or colors.red
+            self:writePadded(2, y, name .. " " .. deltaStr, colWidth, color)
+            y = y + 1
+        end
+        y = y + 1
+    end
     
     -- Energy (only show if low)
     local energy, maxEnergy, energyPercent = self:getEnergyData()
-    local energyColor = self:getEnergyColor(energyPercent)
-    
     if energyPercent < 25 then
         self:writePadded(2, y, "Energy: " .. energyPercent .. "% LOW!", colWidth, colors.red)
         y = y + 1
-        self:drawProgressBar(2, y, colWidth - 2, energyPercent, energyColor, true)
-        y = y + 2
-    end
-    
-    local items, totalItems = self:getItemData()
-    local itemTypes = #items
-    self:writePadded(2, y, "Items: " .. Utils.formatNumber(totalItems), colWidth, colors.cyan)
-    y = y + 1
-    self:writePadded(2, y, "Types: " .. itemTypes, colWidth, colors.white)
-    y = y + 2
-    
-    -- Fluids
-    local fluids = self.bridge:listFluids() or {}
-    self:writePadded(2, y, "Fluids: " .. #fluids .. " types", colWidth, colors.lightBlue)
-    y = y + 1
-    local maxFluids = math.min(3, #fluids)
-    for i = 1, maxFluids do
-        local fluid = fluids[i]
-        if fluid then
-            local name = Utils.truncate(fluid.displayName or fluid.name or "?", colWidth - 8)
-            self:writePadded(3, y, name .. " " .. Utils.formatNumber(fluid.amount or 0), colWidth - 1, colors.gray)
-            y = y + 1
-        end
-    end
-    
-    -- Crafting
-    if hasCrafting then
-        y = y + 1
-        self:writePadded(2, y, "Crafting: " .. #tasks, colWidth, colors.purple)
-        y = y + 1
-        local maxTasks = math.min(4, #tasks)
-        for i = 1, maxTasks do
-            local task = tasks[i]
-            if task then
-                local name = Utils.truncate(task.displayName or task.name or "?", colWidth - 2)
-                self:writePadded(3, y, name, colWidth - 1, colors.lightGray)
-                y = y + 1
-            end
-        end
     end
     
     while y < self.height do
@@ -982,14 +1091,15 @@ function Monitor:drawLargeLayoutDynamic()
         y = y + 1
     end
     
-    -- === COLUMN 2: Stock Keeper ===
+    -- === COLUMN 2: Low Stock ===
     local col2X = colWidth + 3
     y = 3
     
     if hasStock then
         local status = self.stockKeeper:getStatus()
-        local allItems = self.stockKeeper:getItems()
-        self:writePadded(col2X, y, "=== Stock Keeper ===", colWidth, colors.orange)
+        local lowStock = self.stockKeeper:getLowStock()
+        
+        self:writePadded(col2X, y, "=== Low Stock ===", colWidth, colors.orange)
         y = y + 1
         
         if status.enabled then
@@ -999,55 +1109,42 @@ function Monitor:drawLargeLayoutDynamic()
         end
         y = y + 2
         
-        -- Auto-scroll through all items if enabled
-        local maxShow = self.height - y - 1
-        local totalItems = #allItems
-        
-        if self.config.monitorAutoScroll and totalItems > maxShow then
-            -- Update scroll position
-            local now = os.epoch("utc") / 1000
-            local scrollSpeed = self.config.monitorScrollSpeed or 3
-            if now - self.lastScrollTime >= scrollSpeed then
-                self.scrollOffset = (self.scrollOffset + 1) % math.max(1, totalItems - maxShow + 1)
-                self.lastScrollTime = now
-            end
+        if #lowStock > 0 then
+            -- Auto-scroll through low stock items if many
+            local maxShow = self.height - y - 1
+            local totalLow = #lowStock
             
-            -- Display scrolled items
-            for i = 1, maxShow do
-                local idx = self.scrollOffset + i
-                if idx <= totalItems then
-                    local item = allItems[idx]
+            if self.config.monitorAutoScroll and totalLow > maxShow then
+                local now = os.epoch("utc") / 1000
+                local scrollSpeed = self.config.monitorScrollSpeed or 3
+                if now - self.lastScrollTime >= scrollSpeed then
+                    self.scrollOffset = (self.scrollOffset + 1) % math.max(1, totalLow - maxShow + 1)
+                    self.lastScrollTime = now
+                end
+                
+                for i = 1, maxShow do
+                    local idx = self.scrollOffset + i
+                    if idx <= totalLow then
+                        local item = lowStock[idx]
+                        if item then
+                            local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 15)
+                            local statusChar = item.patternStatus == "no_pattern" and "X" or (item.current >= item.target * 0.5 and "~" or "!")
+                            local statusColor = item.patternStatus == "no_pattern" and colors.magenta or (item.current >= item.target * 0.5 and colors.orange or colors.red)
+                            local amtStr = Utils.formatNumber(item.current) .. "/" .. Utils.formatNumber(item.target)
+                            self:writePadded(col2X, y, statusChar .. " " .. name, colWidth - #amtStr - 1, statusColor)
+                            self:writePadded(col2X + colWidth - #amtStr - 1, y, amtStr, #amtStr + 1, colors.white)
+                            y = y + 1
+                        end
+                    end
+                end
+            else
+                for i = 1, math.min(maxShow, totalLow) do
+                    local item = lowStock[i]
                     if item then
-                        local current = self.bridge:getItemAmount(item.name) or 0
-                        local target = item.amount or 1
                         local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 15)
-                        
-                        -- Clear stale craft status if item is now stocked
-                        if current >= target and (item.lastCraftStatus == "no_materials" or item.lastCraftStatus == "crafting") then
-                            item.lastCraftStatus = nil
-                        end
-                        
-                        -- Status indicator - prioritize actual stock level
-                        local statusChar = "+"
-                        local statusColor = colors.green
-                        if item.patternStatus == "no_pattern" then
-                            statusChar = "X"
-                            statusColor = colors.magenta
-                        elseif current < target and item.lastCraftStatus == "no_materials" then
-                            statusChar = "M"
-                            statusColor = colors.yellow
-                        elseif current >= target then
-                            statusChar = "+"
-                            statusColor = colors.green
-                        elseif current >= target * 0.5 then
-                            statusChar = "~"
-                            statusColor = colors.orange
-                        else
-                            statusChar = "!"
-                            statusColor = colors.red
-                        end
-                        
-                        local amtStr = Utils.formatNumber(current) .. "/" .. Utils.formatNumber(target)
+                        local statusChar = item.patternStatus == "no_pattern" and "X" or (item.current >= item.target * 0.5 and "~" or "!")
+                        local statusColor = item.patternStatus == "no_pattern" and colors.magenta or (item.current >= item.target * 0.5 and colors.orange or colors.red)
+                        local amtStr = Utils.formatNumber(item.current) .. "/" .. Utils.formatNumber(item.target)
                         self:writePadded(col2X, y, statusChar .. " " .. name, colWidth - #amtStr - 1, statusColor)
                         self:writePadded(col2X + colWidth - #amtStr - 1, y, amtStr, #amtStr + 1, colors.white)
                         y = y + 1
@@ -1055,83 +1152,47 @@ function Monitor:drawLargeLayoutDynamic()
                 end
             end
         else
-            -- No scroll, show first items
-            for i = 1, math.min(maxShow, totalItems) do
-                local item = allItems[i]
-                if item then
-                    local current = self.bridge:getItemAmount(item.name) or 0
-                    local target = item.amount or 1
-                    local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 15)
-                    
-                    -- Clear stale craft status if item is now stocked
-                    if current >= target and (item.lastCraftStatus == "no_materials" or item.lastCraftStatus == "crafting") then
-                        item.lastCraftStatus = nil
-                    end
-                    
-                    -- Status indicator - prioritize actual stock level
-                    local statusChar = "+"
-                    local statusColor = colors.green
-                    if item.patternStatus == "no_pattern" then
-                        statusChar = "X"
-                        statusColor = colors.magenta
-                    elseif current < target and item.lastCraftStatus == "no_materials" then
-                        statusChar = "M"
-                        statusColor = colors.yellow
-                    elseif current >= target then
-                        statusChar = "+"
-                        statusColor = colors.green
-                    elseif current >= target * 0.5 then
-                        statusChar = "~"
-                        statusColor = colors.orange
-                    else
-                        statusChar = "!"
-                        statusColor = colors.red
-                    end
-                    
-                    local amtStr = Utils.formatNumber(current) .. "/" .. Utils.formatNumber(target)
-                    self:writePadded(col2X, y, statusChar .. " " .. name, colWidth - #amtStr - 1, statusColor)
-                    self:writePadded(col2X + colWidth - #amtStr - 1, y, amtStr, #amtStr + 1, colors.white)
-                    y = y + 1
-                end
-            end
+            self:writePadded(col2X, y, "All " .. status.total .. " items stocked!", colWidth, colors.green)
+            y = y + 1
         end
     end
     
-    -- Clear column 2 (whether Stock Keeper shown or not)
+    -- Clear column 2
     while y < self.height do
         self:writePadded(col2X, y, "", colWidth, colors.black)
         y = y + 1
     end
     
-    -- === COLUMN 3: Item Monitor ===
+    -- === COLUMN 3: System Stats ===
     local col3X = colWidth * 2 + 4
     y = 3
     
-    if hasMonitor then
-        self:writePadded(col3X, y, "=== Item Monitor ===", colWidth, colors.lightBlue)
-        y = y + 1
-        
-        local alerts = self:getMonitorAlerts()
-        self:writePadded(col3X, y, "Tracking: " .. #self.monitoredItems .. " | Low: " .. #alerts, colWidth, #alerts > 0 and colors.yellow or colors.green)
-        y = y + 2
-        
-        local maxShow = math.min(self.height - y - 1, #self.monitoredItems)
-        for i = 1, maxShow do
-            local item = self.monitoredItems[i]
-            if item then
-                local current = self.bridge:getItemAmount(item.name) or 0
-                local threshold = item.threshold or 0
-                local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 10)
-                local amtStr = Utils.formatNumber(current)
-                local color = current < threshold and colors.red or colors.green
-                self:writePadded(col3X, y, name, colWidth - #amtStr - 1, color)
-                self:writePadded(col3X + colWidth - #amtStr - 1, y, amtStr, #amtStr + 1, colors.white)
-                y = y + 1
-            end
+    self:writePadded(col3X, y, "=== System ===", colWidth, colors.yellow)
+    y = y + 1
+    
+    -- Storage stats
+    local items, totalItems = self:getItemData()
+    local itemTypes = #items
+    self:writePadded(col3X, y, "Items: " .. Utils.formatNumber(totalItems), colWidth, colors.cyan)
+    y = y + 1
+    self:writePadded(col3X, y, "Types: " .. itemTypes, colWidth, colors.white)
+    y = y + 2
+    
+    -- Fluids
+    local fluids = self.bridge:listFluids() or {}
+    self:writePadded(col3X, y, "Fluids: " .. #fluids .. " types", colWidth, colors.lightBlue)
+    y = y + 1
+    local maxFluids = math.min(4, #fluids)
+    for i = 1, maxFluids do
+        local fluid = fluids[i]
+        if fluid then
+            local name = Utils.truncate(fluid.displayName or fluid.name or "?", colWidth - 8)
+            self:writePadded(col3X + 1, y, name .. " " .. Utils.formatNumber(fluid.amount or 0), colWidth - 1, colors.gray)
+            y = y + 1
         end
     end
     
-    -- Clear column 3 (whether Item Monitor shown or not)
+    -- Clear column 3
     while y < self.height do
         self:writePadded(col3X, y, "", colWidth, colors.black)
         y = y + 1
