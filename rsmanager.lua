@@ -2,11 +2,22 @@
 -- Version 1.0.0
 -- For CC:Tweaked 1.116.2+ and Advanced Peripherals 0.7.57b+
 
--- Determine install directory
+-- Determine install directory with robust path detection
 local programPath = shell.getRunningProgram()
 local BASE_DIR = fs.getDir(programPath)
-if BASE_DIR == "" or BASE_DIR == "." then 
-    BASE_DIR = "/rsmanager" 
+
+-- Handle various edge cases
+if BASE_DIR == "" or BASE_DIR == "." or BASE_DIR == "/" then 
+    BASE_DIR = "/rsmanager"
+else
+    -- Strip ALL colons from path (ComputerCraft sometimes adds them)
+    BASE_DIR = BASE_DIR:gsub(":", "")
+    
+    -- Ensure BASE_DIR has leading slash and no trailing slash
+    if not BASE_DIR:match("^/") then
+        BASE_DIR = "/" .. BASE_DIR
+    end
+    BASE_DIR = BASE_DIR:gsub("/$", "")
 end
 
 -- Load modules using dofile for CC:Tweaked compatibility
@@ -15,7 +26,12 @@ local function loadModule(name)
     if fs.exists(path) then
         return dofile(path)
     else
-        error("Module not found: " .. path)
+        -- Provide detailed error information for debugging
+        local msg = "Module not found: " .. name .. "\n"
+        msg = msg .. "  Expected path: " .. path .. "\n"
+        msg = msg .. "  BASE_DIR: " .. BASE_DIR .. "\n"
+        msg = msg .. "  Program path: " .. (programPath or "unknown")
+        error(msg)
     end
 end
 
