@@ -518,10 +518,28 @@ local function showStockKeeper()
     local selected = 1
     local scroll = 0
     local maxDisplay = 5  -- Reduced because we show 2 lines per item (name + ID)
+    local needsRedraw = true
+    local lastSelected = -1
+    local lastScroll = -1
+    
+    -- Helper to clear specific line area
+    local function clearItemArea(startY, count)
+        for i = 0, count * 2 - 1 do
+            term.setCursorPos(2, startY + i)
+            term.setBackgroundColor(colors.black)
+            term.write(string.rep(" ", 48))
+        end
+    end
     
     while true do
-        GUI.clear()
-        GUI.drawHeader("Stock Keeper")
+        -- Only full redraw when needed
+        if needsRedraw then
+            GUI.clear()
+            GUI.drawHeader("Stock Keeper")
+            needsRedraw = false
+            lastSelected = -1  -- Force item redraw
+            lastScroll = -1
+        end
         
         -- Status toggle
         term.setCursorPos(2, 4)
@@ -554,15 +572,28 @@ local function showStockKeeper()
             -- Status indicator - prioritize actual stock level
             local current = bridge:getItemAmount(item.name) or 0
             local target = item.amount or 1
+            local isAlwaysCraft = (target == -1)
             
-            -- Clear stale craft status if item is now stocked
-            if current >= target and (item.lastCraftStatus == "no_materials" or item.lastCraftStatus == "crafting") then
+            -- Clear stale craft status if item is now stocked (not for always-craft items)
+            if not isAlwaysCraft and current >= target and (item.lastCraftStatus == "no_materials" or item.lastCraftStatus == "crafting") then
                 item.lastCraftStatus = nil
             end
             
             if item.patternStatus == "no_pattern" then
                 term.setTextColor(colors.magenta)
                 term.write("X")  -- Pattern missing
+            elseif isAlwaysCraft then
+                -- Always-craft mode: show special indicator
+                if item.lastCraftStatus == "no_materials" then
+                    term.setTextColor(colors.yellow)
+                    term.write("M")  -- Missing materials
+                elseif item.lastCraftStatus == "crafting" then
+                    term.setTextColor(colors.cyan)
+                    term.write("*")  -- Actively crafting
+                else
+                    term.setTextColor(colors.purple)
+                    term.write("A")  -- Auto mode active
+                end
             elseif current < target and item.lastCraftStatus == "no_materials" then
                 term.setTextColor(colors.yellow)
                 term.write("M")  -- Missing materials
@@ -578,22 +609,55 @@ local function showStockKeeper()
             end
             
             term.setTextColor(colors.white)
-            term.write(" " .. Utils.truncate(item.displayName or item.name or "Unknown", 22))
-            -- Show item ID on next line for debugging
+            term.write(" " .. Utils.truncate(item.displayName or item.name or "Unknown", 20))
+            
+            -- Calculate percentage
+            local percent = 0
+            if not isAlwaysCraft and target > 0 then
+                percent = math.floor((current / target) * 100)
+            end
+            
+            -- Show amount with percentage on same line
+            term.setCursorPos(26, y)
+            term.setTextColor(colors.cyan)
+            if isAlwaysCraft then
+                term.setTextColor(colors.purple)
+                term.write(Utils.formatNumber(current) .. "/Auto")
+            else
+                term.write(Utils.formatNumber(current) .. "/" .. Utils.formatNumber(target))
+                term.setTextColor(colors.gray)
+                term.write(" (" .. percent .. "%)")
+            end
+            
+            -- Line 2: Detail info (missing material or status)
             term.setCursorPos(4, y + 1)
             term.setTextColor(colors.gray)
-            term.write(Utils.truncate(item.name or "?", 30))
-            term.setCursorPos(28, y)
-            term.setTextColor(colors.cyan)
-            term.write(Utils.formatNumber(current) .. "/" .. Utils.formatNumber(target))
             
-            -- Show status suffix
             if item.patternStatus == "no_pattern" then
                 term.setTextColor(colors.magenta)
-                term.write(" [NO PAT]")
+                term.write("No pattern available")
             elseif item.lastCraftStatus == "no_materials" then
-                term.setTextColor(colors.yellow)
-                term.write(" [NO MAT]")
+                -- Try to get limiting material info
+                local batches, limitingItem = bridge:getAvailableBatches(item.name, 1)
+                if limitingItem and limitingItem.displayName then
+                    term.setTextColor(colors.yellow)
+                    term.write("Need: " .. Utils.truncate(limitingItem.displayName, 25))
+                else
+                    term.setTextColor(colors.yellow)
+                    term.write("Missing materials")
+                end
+            elseif item.lastCraftStatus == "crafting" then
+                term.setTextColor(colors.cyan)
+                term.write("Crafting...")
+            else
+                -- Show available batches if we can calculate
+                local batches, limitingItem = bridge:getAvailableBatches(item.name, 1)
+                if batches and batches > 0 then
+                    term.setTextColor(colors.green)
+                    term.write("Available: " .. batches .. " batches")
+                else
+                    term.write(Utils.truncate(item.name or "?", 30))
+                end
             end
             
             term.setBackgroundColor(colors.black)
@@ -602,7 +666,7 @@ local function showStockKeeper()
         
         term.setCursorPos(2, 17)
         term.setTextColor(colors.gray)
-        term.write("+ OK  ~ Low  ! Crit  X NoPat  M NoMat")
+        term.write("+ OK  ~ Low  ! Crit  A Auto  X NoPat  M NoMat")
         term.setCursorPos(2, 18)
         term.write("[A]dd [E]dit [D]el [C]raft [R]efresh")
         term.setCursorPos(2, 19)
@@ -614,31 +678,37 @@ local function showStockKeeper()
             return
         elseif key == keys.t then
             stockKeeper:toggle()
+            -- Only redraw status line, not full screen
         elseif key == keys.up then
             selected = math.max(1, selected - 1)
             if selected <= scroll then
                 scroll = math.max(0, scroll - 1)
+                needsRedraw = true  -- Need full redraw on scroll
             end
         elseif key == keys.down then
             selected = math.min(#items, selected + 1)
             if selected > scroll + maxDisplay then
                 scroll = scroll + 1
+                needsRedraw = true  -- Need full redraw on scroll
             end
         elseif key == keys.a then
             -- Add new item - sleep briefly to let char event pass
             sleep(0.05)
             showAddStockItem()
             items = stockKeeper:getItems()
+            needsRedraw = true
         elseif key == keys.e and #items > 0 then
             -- Edit selected item
             sleep(0.05)
             showEditStockItem(items[selected])
             items = stockKeeper:getItems()
+            needsRedraw = true
         elseif key == keys.d and #items > 0 then
             -- Delete selected item
             stockKeeper:removeItem(items[selected].name)
             items = stockKeeper:getItems()
             selected = math.min(selected, #items)
+            needsRedraw = true
             -- Refresh monitor immediately to remove deleted item from display
             if monitor and monitor:hasMonitor() and config.useMonitor then
                 monitor.needsFullRedraw = true
@@ -649,7 +719,9 @@ local function showStockKeeper()
             local item = items[selected]
             local current = bridge:getItemAmount(item.name) or 0
             local target = item.amount or 1
-            local needed = target - current
+            local isAlwaysCraft = (target == -1)
+            -- For always-craft items, craft 1; otherwise craft the difference
+            local needed = isAlwaysCraft and 1 or math.max(0, target - current)
             if needed > 0 then
                 local success, reason = bridge:craftItem(item.name, needed)
                 if success then
@@ -662,13 +734,14 @@ local function showStockKeeper()
                     term.setCursorPos(2, 16)
                     term.setTextColor(colors.red)
                     if reason == "no_pattern" then
-                        term.write("Error: Pattern missing!")
+                        term.write("Error: Pattern missing!       ")
                     elseif reason == "no_materials" then
-                        term.write("Error: Missing materials!")
+                        term.write("Error: Missing materials!     ")
                     else
-                        term.write("Error: Could not craft")
+                        term.write("Error: Could not craft        ")
                     end
                     sleep(1)
+                    needsRedraw = true
                 end
             end
             items = stockKeeper:getItems()
@@ -676,12 +749,18 @@ local function showStockKeeper()
             -- Refresh patterns
             term.setCursorPos(2, 16)
             term.setTextColor(colors.yellow)
-            term.write("Refreshing patterns...")
+            term.write("Refreshing patterns...        ")
             bridge:refreshCraftables()
             stockKeeper:validatePatterns(true)
             items = stockKeeper:getItems()
+            needsRedraw = true
         elseif key == keys.s then
             stockKeeper:save()
+            term.setCursorPos(2, 16)
+            term.setTextColor(colors.green)
+            term.write("Saved!                        ")
+            sleep(0.5)
+            needsRedraw = true
         end
     end
 end
@@ -758,13 +837,18 @@ showAddStockItem = function()
             term.setTextColor(colors.white)
             if amount == "" then
                 term.setTextColor(colors.gray)
-                term.write("(type number)")
+                term.write("(type number or -1)")
+            elseif amount == "-1" or amount == "-" then
+                term.setTextColor(colors.purple)
+                term.write(amount .. "_ (Always Craft)")
             else
                 term.write(tostring(amount) .. "_")
             end
             
             term.setCursorPos(2, 10)
             term.setTextColor(colors.gray)
+            term.write("Enter -1 to always keep crafting")
+            term.setCursorPos(2, 11)
             term.write("Type number | Backspace to delete")
             
             term.setCursorPos(2, 19)
@@ -820,7 +904,8 @@ showAddStockItem = function()
                     end
                 elseif key == keys.enter then
                     local amountNum = tonumber(amount)
-                    if amountNum and amountNum >= 1 and amountNum <= 999999 then
+                    -- Allow -1 for "always craft" mode, or positive numbers up to 999999
+                    if amountNum and (amountNum == -1 or (amountNum >= 1 and amountNum <= 999999)) then
                         local item = results[selectedResult]
                         stockKeeper:addItem(item.name, amountNum, item.displayName)
                         return
@@ -835,14 +920,21 @@ showAddStockItem = function()
             results = bridge:findCraftable(searchTerm)
             needsRedraw = true
         elseif event == "char" and phase == "amount" then
-            local digit = tonumber(key)
-            if digit ~= nil then
-                amount = amount .. key
-                local testNum = tonumber(amount)
-                if testNum and testNum <= 999999 then
-                    needsRedraw = true
-                else
-                    amount = amount:sub(1, -2)
+            -- Allow minus sign at start for -1
+            if key == "-" and amount == "" then
+                amount = "-"
+                needsRedraw = true
+            else
+                local digit = tonumber(key)
+                if digit ~= nil then
+                    amount = amount .. key
+                    local testNum = tonumber(amount)
+                    -- Allow -1 or positive numbers up to 999999
+                    if testNum and (testNum == -1 or (testNum >= 0 and testNum <= 999999)) then
+                        needsRedraw = true
+                    else
+                        amount = amount:sub(1, -2)
+                    end
                 end
             end
         end
@@ -877,6 +969,12 @@ showEditStockItem = function(item)
         term.setTextColor(colors.white)
         if inputStr == "" then
             term.setTextColor(colors.gray)
+            term.write("(type number or -1)")
+        elseif inputStr == "-1" or inputStr == "-" then
+            term.setTextColor(colors.purple)
+            term.write(inputStr .. "_ (Always Craft)")
+        elseif inputStr == "" then
+            term.setTextColor(colors.gray)
             term.write("(type number)")
         else
             term.write(inputStr .. "_")
@@ -884,6 +982,8 @@ showEditStockItem = function(item)
         
         term.setCursorPos(2, 10)
         term.setTextColor(colors.gray)
+        term.write("Enter -1 to always keep crafting")
+        term.setCursorPos(2, 11)
         term.write("Type number | Backspace to delete")
         
         term.setCursorPos(2, 19)
@@ -908,7 +1008,8 @@ showEditStockItem = function(item)
                 end
             elseif key == keys.enter then
                 local amount = tonumber(inputStr)
-                if amount and amount >= 1 and amount <= 999999 then
+                -- Allow -1 for "always craft" mode, or positive numbers up to 999999
+                if amount and (amount == -1 or (amount >= 1 and amount <= 999999)) then
                     stockKeeper:updateItem(item.name, amount)
                     return
                 else
@@ -916,14 +1017,21 @@ showEditStockItem = function(item)
                 end
             end
         elseif event == "char" then
-            local digit = tonumber(key)
-            if digit ~= nil then
-                inputStr = inputStr .. key
-                local testNum = tonumber(inputStr)
-                if testNum and testNum <= 999999 then
-                    needsRedraw = true
-                else
-                    inputStr = inputStr:sub(1, -2)
+            -- Allow minus sign at start for -1
+            if key == "-" and inputStr == "" then
+                inputStr = "-"
+                needsRedraw = true
+            else
+                local digit = tonumber(key)
+                if digit ~= nil then
+                    inputStr = inputStr .. key
+                    local testNum = tonumber(inputStr)
+                    -- Allow -1 or positive numbers up to 999999
+                    if testNum and (testNum == -1 or (testNum >= 0 and testNum <= 999999)) then
+                        needsRedraw = true
+                    else
+                        inputStr = inputStr:sub(1, -2)
+                    end
                 end
             end
         end
@@ -1810,12 +1918,21 @@ end
 -- Only updates external monitor, not main terminal
 -- Uses dynamic refresh rate based on activity
 local function monitorTask()
+    local lastUpdateTime = 0
+    local minUpdateInterval = 0.5  -- Minimum 0.5s between updates to prevent spam
+    
     while running do
         local ok, err = pcall(function()
             if monitor and monitor:hasMonitor() and config.useMonitor then
-                monitor:update()
-                -- Clear pending update flag after update
-                monitor.pendingUpdate = false
+                local now = os.epoch("utc") / 1000
+                
+                -- Check if enough time has passed since last update
+                if now - lastUpdateTime >= minUpdateInterval then
+                    monitor:update()
+                    lastUpdateTime = now
+                    -- Clear pending update flag after update
+                    monitor.pendingUpdate = false
+                end
             end
         end)
         if not ok then
@@ -1827,6 +1944,12 @@ local function monitorTask()
         if monitor and monitor.getRefreshRate then
             refreshRate = monitor:getRefreshRate()
         end
+        
+        -- Check for pending update before starting timer - if pending, use short timer
+        if monitor and monitor.pendingUpdate then
+            refreshRate = 0.5  -- Fast update when pending
+        end
+        
         local timer = os.startTimer(refreshRate)
         
         -- Wait for timer, but allow early exit if program stops or pending update
@@ -1836,6 +1959,10 @@ local function monitorTask()
                 break
             elseif event == "monitor_update" then
                 -- Custom event to trigger immediate update
+                os.cancelTimer(timer)
+                break
+            elseif monitor and monitor.pendingUpdate then
+                -- Check pending flag on any event
                 os.cancelTimer(timer)
                 break
             end
