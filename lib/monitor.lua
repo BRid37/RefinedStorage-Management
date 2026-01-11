@@ -461,10 +461,16 @@ end
 function Monitor:update()
     if not self.monitor then return end
     
+    local now = os.epoch("utc") / 1000
+    
     -- Force refresh item data from bridge to get latest counts
+    -- Use shorter cache when pending update or fast refresh mode
     if self.bridge then
-        self.bridge:listItems(true)  -- Force cache refresh
+        local forceRefresh = self.pendingUpdate or self:shouldFastRefresh() or (now - self.lastUpdateTime < 2)
+        self.bridge:listItems(forceRefresh)
     end
+    
+    self.lastUpdateTime = now
     
     -- Track stock changes for activity feed
     self:detectStockChanges()
@@ -930,25 +936,63 @@ function Monitor:drawSmallLayoutDynamic()
             self:writePadded(2, y, "=== Low Stock (" .. #lowStock .. ") ===", lineWidth, colors.orange)
             y = y + 1
             
-            local maxShow = math.min(5, #lowStock, self.height - y - 2)
+            local maxShow = math.min(4, #lowStock, self.height - y - 4)
             for i = 1, maxShow do
                 local item = lowStock[i]
                 if item then
-                    local name = Utils.truncate(item.displayName or item.name or "?", lineWidth - 12)
-                    local statusChar = item.patternStatus == "no_pattern" and "X" or (item.current >= item.target * 0.5 and "~" or "!")
-                    local statusColor = item.patternStatus == "no_pattern" and colors.magenta or (item.current >= item.target * 0.5 and colors.orange or colors.red)
+                    local isAlwaysCraft = item.alwaysCraft or (item.target == -1)
+                    local statusChar, statusColor
                     
-                    -- Special display for always-craft items
-                    local displayText
-                    if item.alwaysCraft then
-                        displayText = "* " .. name .. " (Auto)"
+                    if item.patternStatus == "no_pattern" then
+                        statusChar = "X"
+                        statusColor = colors.magenta
+                    elseif isAlwaysCraft then
+                        statusChar = "A"
                         statusColor = colors.purple
+                    elseif item.lastCraftStatus == "no_materials" then
+                        statusChar = "M"
+                        statusColor = colors.yellow
+                    elseif (item.percent or 0) >= 50 then
+                        statusChar = "~"
+                        statusColor = colors.orange
                     else
-                        displayText = statusChar .. " " .. name .. " " .. item.current .. "/" .. item.target
+                        statusChar = "!"
+                        statusColor = colors.red
                     end
                     
-                    self:writePadded(2, y, displayText, lineWidth, statusColor)
+                    -- Line 1: Name with status and amount/percentage
+                    local name = Utils.truncate(item.displayName or item.name or "?", lineWidth - 18)
+                    local amtStr
+                    if isAlwaysCraft then
+                        amtStr = "(Auto)"
+                    else
+                        amtStr = item.current .. "/" .. item.target .. " (" .. (item.percent or 0) .. "%)"
+                    end
+                    self:writePadded(2, y, statusChar .. " " .. name, lineWidth - #amtStr - 1, statusColor)
+                    self:writePadded(lineWidth - #amtStr + 1, y, amtStr, #amtStr + 1, colors.gray)
                     y = y + 1
+                    
+                    -- Line 2: Missing material or available batches (if space)
+                    if y < self.height - 2 then
+                        local detailLine = ""
+                        local detailColor = colors.gray
+                        
+                        if item.patternStatus == "no_pattern" then
+                            detailLine = "  No pattern"
+                            detailColor = colors.magenta
+                        elseif item.lastCraftStatus == "no_materials" and item.limitingItem then
+                            detailLine = "  Need: " .. Utils.truncate(item.limitingItem.displayName or item.limitingItem.name or "?", lineWidth - 10)
+                            detailColor = colors.yellow
+                        elseif item.availableBatches and item.availableBatches > 0 then
+                            detailLine = "  Avail: " .. item.availableBatches .. " batches"
+                            detailColor = colors.cyan
+                        end
+                        
+                        if detailLine ~= "" then
+                            self:writePadded(2, y, detailLine, lineWidth, detailColor)
+                            y = y + 1
+                        end
+                    end
                 end
             end
         else
@@ -1055,17 +1099,60 @@ function Monitor:drawMediumLayoutDynamic()
         ry = ry + 2
         
         if #lowStock > 0 then
-            local maxShow = math.min(self.height - ry - 1, #lowStock)
+            local maxShow = math.floor((self.height - ry - 1) / 2)  -- 2 lines per item
+            maxShow = math.min(maxShow, #lowStock)
             for i = 1, maxShow do
                 local item = lowStock[i]
                 if item then
-                    local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 12)
-                    local statusChar = item.patternStatus == "no_pattern" and "X" or (item.current >= item.target * 0.5 and "~" or "!")
-                    local statusColor = item.patternStatus == "no_pattern" and colors.magenta or (item.current >= item.target * 0.5 and colors.orange or colors.red)
-                    local amtStr = item.current .. "/" .. item.target
+                    local isAlwaysCraft = item.alwaysCraft or (item.target == -1)
+                    local statusChar, statusColor
+                    
+                    if item.patternStatus == "no_pattern" then
+                        statusChar = "X"
+                        statusColor = colors.magenta
+                    elseif isAlwaysCraft then
+                        statusChar = "A"
+                        statusColor = colors.purple
+                    elseif item.lastCraftStatus == "no_materials" then
+                        statusChar = "M"
+                        statusColor = colors.yellow
+                    elseif (item.percent or 0) >= 50 then
+                        statusChar = "~"
+                        statusColor = colors.orange
+                    else
+                        statusChar = "!"
+                        statusColor = colors.red
+                    end
+                    
+                    -- Line 1: Name and amount with percentage
+                    local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 16)
+                    local amtStr
+                    if isAlwaysCraft then
+                        amtStr = "Auto"
+                    else
+                        amtStr = item.current .. "/" .. item.target .. " (" .. (item.percent or 0) .. "%)"
+                    end
                     self:writePadded(halfW + 2, ry, statusChar .. " " .. name, colWidth - #amtStr - 1, statusColor)
-                    self:writePadded(halfW + colWidth - #amtStr, ry, amtStr, #amtStr + 1, colors.gray)
+                    self:writePadded(halfW + colWidth - #amtStr, ry, amtStr, #amtStr + 1, isAlwaysCraft and colors.purple or colors.gray)
                     ry = ry + 1
+                    
+                    -- Line 2: Detail (missing material or batches)
+                    local detailStr = ""
+                    local detailColor = colors.gray
+                    if item.patternStatus == "no_pattern" then
+                        detailStr = "  No pattern available"
+                        detailColor = colors.magenta
+                    elseif item.lastCraftStatus == "no_materials" and item.limitingItem then
+                        detailStr = "  Need: " .. Utils.truncate(item.limitingItem.displayName or "?", colWidth - 10)
+                        detailColor = colors.yellow
+                    elseif item.availableBatches and item.availableBatches > 0 then
+                        detailStr = "  Avail: " .. item.availableBatches .. " batches"
+                        detailColor = colors.cyan
+                    end
+                    if detailStr ~= "" then
+                        self:writePadded(halfW + 2, ry, detailStr, colWidth, detailColor)
+                        ry = ry + 1
+                    end
                 end
             end
         else
@@ -1155,8 +1242,61 @@ function Monitor:drawLargeLayoutDynamic()
         y = y + 2
         
         if #lowStock > 0 then
+            -- Helper to draw a single low stock item (2 lines each)
+            local function drawLowStockItem(item, yPos)
+                local isAlwaysCraft = item.alwaysCraft or (item.target == -1)
+                local statusChar, statusColor
+                
+                if item.patternStatus == "no_pattern" then
+                    statusChar = "X"
+                    statusColor = colors.magenta
+                elseif isAlwaysCraft then
+                    statusChar = "A"
+                    statusColor = colors.purple
+                elseif item.lastCraftStatus == "no_materials" then
+                    statusChar = "M"
+                    statusColor = colors.yellow
+                elseif (item.percent or 0) >= 50 then
+                    statusChar = "~"
+                    statusColor = colors.orange
+                else
+                    statusChar = "!"
+                    statusColor = colors.red
+                end
+                
+                -- Line 1: Name and amount with percentage
+                local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 18)
+                local amtStr
+                if isAlwaysCraft then
+                    amtStr = "Auto"
+                else
+                    amtStr = Utils.formatNumber(item.current) .. "/" .. Utils.formatNumber(item.target) .. " (" .. (item.percent or 0) .. "%)"
+                end
+                self:writePadded(col2X, yPos, statusChar .. " " .. name, colWidth - #amtStr - 1, statusColor)
+                self:writePadded(col2X + colWidth - #amtStr - 1, yPos, amtStr, #amtStr + 1, isAlwaysCraft and colors.purple or colors.white)
+                
+                -- Line 2: Detail info
+                local detailStr = ""
+                local detailColor = colors.gray
+                if item.patternStatus == "no_pattern" then
+                    detailStr = "  No pattern"
+                    detailColor = colors.magenta
+                elseif item.lastCraftStatus == "no_materials" and item.limitingItem then
+                    detailStr = "  Need: " .. Utils.truncate(item.limitingItem.displayName or "?", colWidth - 10)
+                    detailColor = colors.yellow
+                elseif item.availableBatches and item.availableBatches > 0 then
+                    detailStr = "  Avail: " .. item.availableBatches .. " batches"
+                    detailColor = colors.cyan
+                end
+                if detailStr ~= "" then
+                    self:writePadded(col2X, yPos + 1, detailStr, colWidth, detailColor)
+                    return 2
+                end
+                return 1
+            end
+            
             -- Auto-scroll through low stock items if many
-            local maxShow = self.height - y - 1
+            local maxShow = math.floor((self.height - y - 1) / 2)  -- 2 lines per item
             local totalLow = #lowStock
             
             if self.config.monitorAutoScroll and totalLow > maxShow then
@@ -1172,13 +1312,8 @@ function Monitor:drawLargeLayoutDynamic()
                     if idx <= totalLow then
                         local item = lowStock[idx]
                         if item then
-                            local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 15)
-                            local statusChar = item.patternStatus == "no_pattern" and "X" or (item.current >= item.target * 0.5 and "~" or "!")
-                            local statusColor = item.patternStatus == "no_pattern" and colors.magenta or (item.current >= item.target * 0.5 and colors.orange or colors.red)
-                            local amtStr = Utils.formatNumber(item.current) .. "/" .. Utils.formatNumber(item.target)
-                            self:writePadded(col2X, y, statusChar .. " " .. name, colWidth - #amtStr - 1, statusColor)
-                            self:writePadded(col2X + colWidth - #amtStr - 1, y, amtStr, #amtStr + 1, colors.white)
-                            y = y + 1
+                            local lines = drawLowStockItem(item, y)
+                            y = y + lines
                         end
                     end
                 end
@@ -1186,13 +1321,8 @@ function Monitor:drawLargeLayoutDynamic()
                 for i = 1, math.min(maxShow, totalLow) do
                     local item = lowStock[i]
                     if item then
-                        local name = Utils.truncate(item.displayName or item.name or "?", colWidth - 15)
-                        local statusChar = item.patternStatus == "no_pattern" and "X" or (item.current >= item.target * 0.5 and "~" or "!")
-                        local statusColor = item.patternStatus == "no_pattern" and colors.magenta or (item.current >= item.target * 0.5 and colors.orange or colors.red)
-                        local amtStr = Utils.formatNumber(item.current) .. "/" .. Utils.formatNumber(item.target)
-                        self:writePadded(col2X, y, statusChar .. " " .. name, colWidth - #amtStr - 1, statusColor)
-                        self:writePadded(col2X + colWidth - #amtStr - 1, y, amtStr, #amtStr + 1, colors.white)
-                        y = y + 1
+                        local lines = drawLowStockItem(item, y)
+                        y = y + lines
                     end
                 end
             end

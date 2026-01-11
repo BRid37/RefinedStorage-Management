@@ -258,17 +258,42 @@ function StockKeeper:getLowStock(forceRefresh)
                 -- For always-craft mode, craft 1 at a time if we have materials
                 local craftAmount = alwaysCraft and 1 or math.max(0, target - current)
                 
+                -- Calculate percentage (0-100)
+                local percent = 0
+                if not alwaysCraft and target > 0 then
+                    percent = math.floor((current / target) * 100)
+                end
+                
+                -- Get missing materials info (only if we have a pattern)
+                local missingMaterials = nil
+                local availableBatches = 0
+                local limitingItem = nil
+                
+                if item.patternStatus ~= StockKeeper.STATUS_NO_PATTERN then
+                    -- Try to get available batches and limiting ingredient
+                    availableBatches, limitingItem = self.bridge:getAvailableBatches(item.name, 1)
+                    
+                    -- If no batches available, get missing materials detail
+                    if availableBatches == 0 and item.lastCraftStatus == "no_materials" then
+                        missingMaterials = self.bridge:getMissingMaterials(item.name, craftAmount)
+                    end
+                end
+                
                 table.insert(lowStock, {
                     name = item.name,
                     displayName = item.displayName or item.name,
                     current = current,
                     target = target,
                     needed = craftAmount,
+                    percent = percent,
                     priority = item.priority or 1,
                     patternStatus = item.patternStatus or StockKeeper.STATUS_OK,
                     lastCraftStatus = item.lastCraftStatus,
                     lastCraftTime = item.lastCraftTime,
-                    alwaysCraft = alwaysCraft
+                    alwaysCraft = alwaysCraft,
+                    missingMaterials = missingMaterials,
+                    availableBatches = availableBatches,
+                    limitingItem = limitingItem
                 })
             end
         end
@@ -312,19 +337,37 @@ function StockKeeper:check()
             goto continue
         end
         
+        -- Re-verify current amount right before crafting (fresh data)
+        local currentAmount = self.bridge:getItemAmount(item.name) or 0
+        local targetAmount = item.target
+        local isAlwaysCraft = (targetAmount == -1)
+        
+        -- Calculate actual needed amount
+        local actualNeeded
+        if isAlwaysCraft then
+            actualNeeded = 1  -- Always craft 1 at a time for auto-craft items
+        else
+            actualNeeded = math.max(0, targetAmount - currentAmount)
+        end
+        
+        -- Skip if no longer needed (may have been fulfilled since getLowStock)
+        if actualNeeded <= 0 then
+            goto continue
+        end
+        
         -- FIRST: Check if already crafting via API (most reliable check)
         local isCrafting = self.bridge:isItemCrafting(item.name)
         
         if isCrafting then
             -- Already crafting, mark as pending and skip
             self:updateItemCraftStatus(item.name, StockKeeper.STATUS_CRAFTING)
-            self.bridge:markCraftPending(item.name, item.needed, item.target)
+            self.bridge:markCraftPending(item.name, actualNeeded, targetAmount)
             goto continue
         end
         
         -- SECOND: Check our internal pending craft tracker
         -- For always-craft items, use longer timeout since they continuously craft
-        local timeout = item.alwaysCraft and 300 or 120  -- 5 min for always-craft, 2 min for normal
+        local timeout = isAlwaysCraft and 300 or 120  -- 5 min for always-craft, 2 min for normal
         local hasPending, pendingAmount = self.bridge:hasPendingCraft(item.name, timeout)
         if hasPending then
             -- We already requested a craft, skip until timeout expires
@@ -334,23 +377,23 @@ function StockKeeper:check()
         
         -- THIRD: If no active craft detected, try to start one
         if true then
-            -- Try to craft
-            local success, reason = self.bridge:craftItem(item.name, item.needed)
+            -- Try to craft - use the verified actualNeeded amount
+            local success, reason = self.bridge:craftItem(item.name, actualNeeded)
             
             if success then
                 self.craftingQueue[item.name] = {
-                    amount = item.needed,
+                    amount = actualNeeded,
                     requestTime = os.epoch("utc")
                 }
                 self:updateItemCraftStatus(item.name, StockKeeper.STATUS_CRAFTING)
                 -- Mark as pending to prevent duplicate requests
-                self.bridge:markCraftPending(item.name, item.needed, item.target)
+                self.bridge:markCraftPending(item.name, actualNeeded, targetAmount)
                 craftedAny = true
                 -- Track for monitor display
                 table.insert(craftedItems, {
                     name = item.name,
                     displayName = item.displayName,
-                    amount = item.needed
+                    amount = actualNeeded
                 })
             else
                 -- Track the failure reason
@@ -403,19 +446,28 @@ function StockKeeper:getStatus()
     local satisfied = 0
     local low = 0
     local critical = 0
+    local alwaysCraftCount = 0
     
     for _, item in ipairs(items) do
         if item and item.enabled ~= false and item.name then
             local current = self.bridge:getItemAmount(item.name) or 0
             local target = item.amount or 1
-            local percent = target > 0 and (current / target) or 0
             
-            if percent >= 1 then
+            -- Handle -1 (always craft) items specially
+            if target == -1 then
+                alwaysCraftCount = alwaysCraftCount + 1
+                -- Always-craft items are considered "satisfied" for status purposes
                 satisfied = satisfied + 1
-            elseif percent >= 0.5 then
-                low = low + 1
             else
-                critical = critical + 1
+                local percent = target > 0 and (current / target) or 0
+                
+                if percent >= 1 then
+                    satisfied = satisfied + 1
+                elseif percent >= 0.5 then
+                    low = low + 1
+                else
+                    critical = critical + 1
+                end
             end
         end
     end
@@ -425,6 +477,7 @@ function StockKeeper:getStatus()
         satisfied = satisfied,
         low = low,
         critical = critical,
+        alwaysCraft = alwaysCraftCount,
         enabled = self.enabled
     }
 end

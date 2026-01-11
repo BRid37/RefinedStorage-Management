@@ -657,39 +657,37 @@ end
 function RSBridge:getItemAmount(name)
     if not name then return 0 end
     
-    local item = self:getItem(name)
-    if item then
-        -- Use dynamic field detection for amount
-        local amount = self:getItemAmountField(item)
-        -- Debug logging for discrepancies
-        if amount < 100 then  -- Only log if surprisingly low
-            log("getItemAmount(" .. name .. ") = " .. amount .. " | raw item: " .. textutils.serialise(item))
-        end
-        return amount
-    end
-    
-    -- Also check if there are multiple stacks with different NBT
+    -- Always scan all items and sum exact matches
+    -- This handles items with multiple stacks (different NBT, damage values, etc.)
     local items = self:listItems()
     local totalAmount = 0
     local matchCount = 0
+    
     for _, itm in ipairs(items) do
-        -- Check if name matches (case-insensitive and partial match)
         local itmName = self:getItemNameField(itm)
-        if itmName and itmName:find(name, 1, true) then
+        -- EXACT match only - no partial matching to avoid counting wrong items
+        if itmName and itmName == name then
             local amt = self:getItemAmountField(itm)
             totalAmount = totalAmount + amt
             matchCount = matchCount + 1
-            if matchCount <= 3 then  -- Log first 3 matches
-                log("  Partial match: " .. itmName .. " = " .. amt)
-            end
         end
     end
     
-    if matchCount > 1 then
-        log("Found " .. matchCount .. " partial matches for '" .. name .. "', total: " .. totalAmount)
+    -- If no exact matches found, try getItem as fallback (single item lookup)
+    if matchCount == 0 then
+        local item = self:getItem(name)
+        if item then
+            totalAmount = self:getItemAmountField(item)
+            matchCount = 1
+        end
     end
     
-    return 0
+    -- Debug logging for multiple stacks
+    if matchCount > 1 then
+        log("getItemAmount(" .. name .. "): " .. matchCount .. " stacks, total: " .. totalAmount)
+    end
+    
+    return totalAmount
 end
 
 function RSBridge:findItem(searchTerm)
@@ -879,7 +877,7 @@ function RSBridge:checkCraftStatus(name, amount)
     local result = self:call("isItemCrafting", {name = name})
     if result then
         -- Item is already being crafted
-        return true, "already_crafting"
+        return true, "crafting"
     end
     
     -- Try craftItem and check result/error
@@ -906,6 +904,119 @@ function RSBridge:checkCraftStatus(name, amount)
     end
     
     return false, "unknown"
+end
+
+-- Get missing materials for a craft (tries multiple API methods)
+-- Returns: table of {name, displayName, needed, available} or nil
+function RSBridge:getMissingMaterials(name, amount)
+    if not self.connected then return nil end
+    
+    amount = amount or 1
+    
+    -- Try getCraftingPreview (some AP versions have this)
+    local preview = self:call("getCraftingPreview", {name = name, count = amount})
+    if preview and type(preview) == "table" then
+        local missing = {}
+        for _, item in ipairs(preview) do
+            local needed = self:getField(item, "itemAmount", "missing", "needed", "required", "count") or 0
+            if needed > 0 then
+                table.insert(missing, {
+                    name = self:getItemNameField(item),
+                    displayName = self:getItemDisplayNameField(item),
+                    needed = needed,
+                    available = self:getField(item, "itemAmount", "available", "stored", "count") or 0
+                })
+            end
+        end
+        if #missing > 0 then return missing end
+    end
+    
+    -- Try getMissingItems
+    local missingItems = self:call("getMissingItems", {name = name, count = amount})
+    if missingItems and type(missingItems) == "table" then
+        local missing = {}
+        for _, item in ipairs(missingItems) do
+            table.insert(missing, {
+                name = self:getItemNameField(item),
+                displayName = self:getItemDisplayNameField(item),
+                needed = self:getItemAmountField(item),
+                available = 0
+            })
+        end
+        if #missing > 0 then return missing end
+    end
+    
+    -- Try getPattern to get recipe ingredients and check storage
+    local pattern = self:call("getPattern", {name = name})
+    if pattern then
+        local inputs = pattern.inputs or pattern.ingredients or pattern.input
+        if inputs and type(inputs) == "table" then
+            local missing = {}
+            for _, input in ipairs(inputs) do
+                local inputName = self:getItemNameField(input)
+                local inputNeeded = self:getItemAmountField(input) * amount
+                local inputAvail = self:getItemAmount(inputName)
+                if inputAvail < inputNeeded then
+                    table.insert(missing, {
+                        name = inputName,
+                        displayName = self:getItemDisplayNameField(input),
+                        needed = inputNeeded,
+                        available = inputAvail
+                    })
+                end
+            end
+            if #missing > 0 then return missing end
+        end
+    end
+    
+    return nil
+end
+
+-- Calculate how many batches can be crafted with available materials
+-- Returns: number of complete batches, limiting ingredient info
+function RSBridge:getAvailableBatches(name, batchSize)
+    if not self.connected then return 0, nil end
+    
+    batchSize = batchSize or 1
+    
+    -- Try to get pattern/recipe info
+    local pattern = self:call("getPattern", {name = name})
+    if not pattern then
+        -- No pattern info, can't calculate
+        return 0, {reason = "no_pattern"}
+    end
+    
+    local inputs = pattern.inputs or pattern.ingredients or pattern.input
+    if not inputs or type(inputs) ~= "table" then
+        return 0, {reason = "unknown_recipe"}
+    end
+    
+    local minBatches = math.huge
+    local limitingItem = nil
+    
+    for _, input in ipairs(inputs) do
+        local inputName = self:getItemNameField(input)
+        local inputNeeded = self:getItemAmountField(input)
+        if inputNeeded > 0 then
+            local inputAvail = self:getItemAmount(inputName)
+            local possibleBatches = math.floor(inputAvail / inputNeeded)
+            if possibleBatches < minBatches then
+                minBatches = possibleBatches
+                limitingItem = {
+                    name = inputName,
+                    displayName = self:getItemDisplayNameField(input),
+                    needed = inputNeeded,
+                    available = inputAvail
+                }
+            end
+        end
+    end
+    
+    if minBatches == math.huge then
+        return 0, {reason = "no_ingredients"}
+    end
+    
+    return minBatches, limitingItem
 end
 
 function RSBridge:craftItem(name, amount)
